@@ -1,1 +1,5 @@
-target/
+/target
+.vscode/
+sync-tmp/
+mini-lsm.db/
+lsm.db/
