@@ -318,14 +318,42 @@ impl LsmStorageInner {
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
         let state = self.state.read();
 
-        state.memtable.put(_key, _value)
+        state.memtable.put(_key, _value)?;
+
+        if state.memtable.approximate_size() >= self.options.target_sst_size {
+            // Drop read lock before calling force_freeze_memtable
+            // because freeze needs a WRITE lock on self.state
+            drop(state);
+            let state_lock = self.state_lock.lock();
+            let state = self.state.read();
+            if state.memtable.approximate_size() >= self.options.target_sst_size {
+                drop(state);
+                let _ = self.force_freeze_memtable(&state_lock);
+            }
+        }
+
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
         let state = self.state.read();
 
-        state.memtable.put(_key, b"")
+        state.memtable.put(_key, b"")?;
+
+        if state.memtable.approximate_size() >= self.options.target_sst_size {
+            // Drop read lock before calling force_freeze_memtable
+            // because freeze needs a WRITE lock on self.state
+            drop(state);
+            let state_lock = self.state_lock.lock();
+            let state = self.state.read();
+            if state.memtable.approximate_size() >= self.options.target_sst_size {
+                drop(state);
+                let _ = self.force_freeze_memtable(&state_lock);
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -350,7 +378,24 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        unimplemented!()
+        let memtable_id = self.next_sst_id();
+
+        let new_memtable = Arc::new(if self.options.enable_wal {
+            MemTable::create_with_wal(memtable_id, self.path_of_wal(memtable_id))?
+        } else {
+            MemTable::create(memtable_id)
+        });
+
+        {
+            let mut guard = self.state.write();
+
+            let mut snapshot = guard.as_ref().clone();
+            let old_memtable = std::mem::replace(&mut snapshot.memtable, new_memtable);
+            snapshot.imm_memtables.insert(0, old_memtable);
+            *guard = Arc::new(snapshot);
+        }
+
+        Ok(())
     }
 
     /// Force flush the earliest-created immutable memtable to disk
