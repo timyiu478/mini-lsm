@@ -299,14 +299,21 @@ impl LsmStorageInner {
 
         if let Some(val) = state.memtable.get(_key) {
             if val.is_empty() {
-                // Empty value represents a deletion tombstone -> key does not exist
-                Ok(None)
-            } else {
-                Ok(Some(val))
+                return Ok(None); // Deletion tombstone
             }
-        } else {
-            Ok(None)
+            return Ok(Some(val));
         }
+
+        for imm_memtable in &state.imm_memtables {
+            if let Some(val) = imm_memtable.get(_key) {
+                if val.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(val));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
