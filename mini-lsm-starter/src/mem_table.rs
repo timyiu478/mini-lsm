@@ -144,7 +144,23 @@ impl MemTable {
 
     /// Get an iterator over a range of keys.
     pub fn scan(&self, _lower: Bound<&[u8]>, _upper: Bound<&[u8]>) -> MemTableIterator {
-        unimplemented!()
+        let mut iter = MemTableIteratorBuilder {
+            map: self.map.clone(),
+            // The builder passes a reference `&'this SkipMap` into this closure
+            iter_builder: |map| {
+                map.range((
+                    _lower.map(|v| Bytes::copy_from_slice(v)),
+                    _upper.map(|v| Bytes::copy_from_slice(v)),
+                ))
+            },
+            item: (Bytes::new(), Bytes::new()),
+            valid: false,
+        }
+        .build();
+
+        let _ = iter.next();
+
+        iter
     }
 
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
@@ -184,24 +200,39 @@ pub struct MemTableIterator {
     iter: SkipMapRangeIter<'this>,
     /// Stores the current key-value pair.
     item: (Bytes, Bytes),
+    valid: bool,
 }
 
 impl StorageIterator for MemTableIterator {
     type KeyType<'a> = KeySlice<'a>;
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.borrow_item().1.as_ref()
     }
 
     fn key(&self) -> KeySlice<'_> {
-        unimplemented!()
+        KeySlice::from_slice(self.borrow_item().0.as_ref())
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.with_valid(|valid| *valid)
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let entry = self.with_iter_mut(|iter| {
+            iter.next()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+        });
+
+        if let Some((key, value)) = entry {
+            self.with_item_mut(|item| {
+                *item = (key, value);
+            });
+            self.with_valid_mut(|valid| *valid = true);
+        } else {
+            self.with_valid_mut(|valid| *valid = false);
+        }
+
+        Ok(())
     }
 }
