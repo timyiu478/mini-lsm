@@ -149,8 +149,8 @@ impl MemTable {
             // The builder passes a reference `&'this SkipMap` into this closure
             iter_builder: |map| {
                 map.range((
-                    _lower.map(|v| Bytes::copy_from_slice(v)),
-                    _upper.map(|v| Bytes::copy_from_slice(v)),
+                    _lower.map(Bytes::copy_from_slice),
+                    _upper.map(Bytes::copy_from_slice),
                 ))
             },
             item: (Bytes::new(), Bytes::new()),

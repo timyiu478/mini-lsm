@@ -93,7 +93,7 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     fn is_valid(&self) -> bool {
         self.current
             .as_ref()
-            .map_or(false, |wrapper| wrapper.1.is_valid())
+            .is_some_and(|wrapper| wrapper.1.is_valid())
     }
 
     fn next(&mut self) -> Result<()> {
@@ -124,10 +124,10 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         }
 
         // Re-evaluate `current`
-        if current.1.is_valid() {
-            if let Some(old_current) = self.current.take() {
-                self.iters.push(old_current);
-            }
+        if current.1.is_valid()
+            && let Some(old_current) = self.current.take()
+        {
+            self.iters.push(old_current);
         }
 
         self.current = self.iters.pop();
