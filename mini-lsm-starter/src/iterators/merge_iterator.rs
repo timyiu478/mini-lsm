@@ -12,11 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::cmp::{self};
 use std::collections::BinaryHeap;
+use std::collections::binary_heap::PeekMut;
 
 use anyhow::Result;
 
@@ -59,7 +57,19 @@ pub struct MergeIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        let mut heap = BinaryHeap::new();
+        for (idx, iter) in iters.into_iter().enumerate() {
+            if iter.is_valid() {
+                heap.push(HeapWrapper(idx, iter));
+            }
+        }
+
+        let current = heap.pop();
+
+        MergeIterator {
+            iters: heap,
+            current,
+        }
     }
 }
 
@@ -69,18 +79,59 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice<'_> {
-        unimplemented!()
+        self.current
+            .as_ref()
+            .map_or(KeySlice::default(), |wrapper| wrapper.1.key())
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current
+            .as_ref()
+            .map_or(&[], |wrapper| wrapper.1.value())
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.current
+            .as_ref()
+            .map_or(false, |wrapper| wrapper.1.is_valid())
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let current = match self.current.as_mut() {
+            Some(current) => current,
+            None => return Ok(()),
+        };
+
+        // Loop through `iters` to advance and skip any sibling iterators that hold the exact same key!
+        while let Some(mut top) = self.iters.peek_mut() {
+            if top.1.key() == current.1.key() {
+                if let Err(e) = top.1.next() {
+                    PeekMut::pop(top);
+                    return Err(e);
+                }
+
+                if !top.1.is_valid() {
+                    PeekMut::pop(top);
+                }
+            } else {
+                break;
+            }
+        }
+
+        if let Err(e) = current.1.next() {
+            self.current = self.iters.pop();
+            return Err(e);
+        }
+
+        // Re-evaluate `current`
+        if current.1.is_valid() {
+            if let Some(old_current) = self.current.take() {
+                self.iters.push(old_current);
+            }
+        }
+
+        self.current = self.iters.pop();
+
+        Ok(())
     }
 }
