@@ -30,7 +30,19 @@ Cons of using the skiplist:
 ## Q. Why do we need a combination of state and state_lock? Can we only use state.read() and state.write()?
 
 * The use of state: make sure NO thread that can hold an old LSM-state snapshot write to that now-immutable memtable
-* The use of state_lock
+* The use of state_lock: coordinate the memtable freezing process to avoid the race between freezers
+
+If we were to rely only on state.write() without state_lock, we would face two bad choices:
+
+1. Hold state.write() during the entire freeze process (Bad for Latency): Creating a new MemTable (and initializing its WAL on disk) involves slow file system I/O. If we do this inside state.write(), all reads (get) and all writes (put/delete) across the entire storage engine are completely blocked for several milliseconds while disk I/O completes.
+
+2. Perform I/O outside the lock, then take state.write() (Races between Freezers): If two threads concurrently notice the active memtable is full and both try to prepare a new MemTable outside state.write() to avoid blocking readers/writers.
+
+* Thread A and Thread B both see approximate_size >= target_sst_size.
+* Both threads generate a new SST ID (e.g., ID 5 and ID 6).
+* Both threads spend time creating WAL files on disk.
+* Both threads race to acquire state.write() and push their new memtable.
+* Result: Duplicate concurrent freezes, wasted I/O, skipped or out-of-order memtable IDs, and corrupt imm_memtables history.
 
 ## Q. Construct the smallest example in which probing memtables in the wrong order returns a stale value. Then construct one in which it resurrects a deleted value.
 
@@ -77,13 +89,49 @@ Therefore, a thread can never hold a reference to the active memtable while a fr
 
 ## Q. In several places, you might acquire a state read lock, release it, and then acquire a write lock. The two operations may occur in different functions that call one another. How does this differ from directly upgrading a read lock to a write lock? Is an upgrade necessary, and what does it cost?
 
+Related Code:
 
+```rust
+pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
+    let state = self.state.read();
+
+    state.memtable.put(_key, _value)?;
+
+    if state.memtable.approximate_size() >= self.options.target_sst_size {
+        // Drop read lock before calling force_freeze_memtable
+        // because freeze needs a WRITE lock on self.state
+        drop(state);
+        let state_lock = self.state_lock.lock();
+        let state = self.state.read();
+        if state.memtable.approximate_size() >= self.options.target_sst_size {
+            drop(state);
+            let _ = self.force_freeze_memtable(&state_lock);
+        }
+    }
+
+    Ok(())
+}
+```
+
+Lock upgrade vs Lock reacquisition:
+
+* Lock reacquisition: other threads can acquire the lock in the gap of release the state read lock and then acquire the state write lock. This can cause multiple threads both see approximate_size >= target_sst_size can and prepare the new memtable.
+* Lock upgrade: elimate the gap of lock reacquisition
+
+The upgrade is unnecessary because we can use the state_lock mutex lock to ensure only one thread see approximate_size >= target_sst_size.
+
+The cost of lock upgrade is deadlock:
+
+1. Thread A and Thread B holds read lock
+2. Thread A waits for thread B for upgrading to write lock
+3. Thread B waits for thread A for upgrading to write lock
 
 ## Q. Documentation check: Read parking_lot’s RwLock fairness section. What might happen to readers waiting to acquire the lock when a writer is already waiting for the current readers to release it? How does eventual fairness differ from strict first-in, first-out service?
 
 
 
 ## Q. Is the memtable’s memory layout efficient? Does it have good data locality? Consider how Bytes is implemented and stored in the skiplist. How could you optimize the memtable’s layout?
+
 
 # Reference
 
