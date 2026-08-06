@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::thread;
+use std::time::Duration;
 use std::{ops::Bound, sync::Arc};
 
 use bytes::Bytes;
@@ -328,4 +330,99 @@ fn test_task4_integration() {
         iter.next().unwrap();
         assert!(!iter.is_valid());
     }
+}
+
+#[test]
+fn test_concurrent_memtable_iterator_visibility() {
+    let memtable = Arc::new(MemTable::create(0));
+
+    // 1. Insert initial keys
+    memtable.for_testing_put_slice(b"key1", b"value1").unwrap();
+    memtable.for_testing_put_slice(b"key3", b"value3").unwrap();
+
+    let memtable_clone = Arc::clone(&memtable);
+
+    // 2. Spawn a background thread that inserts key2 after a short delay
+    let writer_handle = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        memtable_clone
+            .for_testing_put_slice(b"key2", b"value2")
+            .unwrap();
+    });
+
+    // 3. Create a MemTableIterator on the main thread BEFORE key2 is inserted
+    let mut iter = memtable.for_testing_scan_slice(Bound::Unbounded, Bound::Unbounded);
+
+    // Read the first key ("key1")
+    assert!(iter.is_valid());
+    assert_eq!(iter.key().for_testing_key_ref(), b"key1");
+    assert_eq!(iter.value(), b"value1");
+
+    // Wait for the writer thread to complete its insertion of "key2"
+    writer_handle.join().unwrap();
+
+    // 4. Advance the iterator.
+    // Even though the iterator was created before "key2" was inserted,
+    // it follows the lock-free pointers and sees "key2" because it was inserted ahead of the iterator's position!
+    iter.next().unwrap();
+    assert!(iter.is_valid());
+    assert_eq!(
+        iter.key().for_testing_key_ref(),
+        b"key2",
+        "Iterator should see newly inserted key2!"
+    );
+    assert_eq!(iter.value(), b"value2");
+
+    // Advance to "key3"
+    iter.next().unwrap();
+    assert!(iter.is_valid());
+    assert_eq!(iter.key().for_testing_key_ref(), b"key3");
+    assert_eq!(iter.value(), b"value3");
+
+    iter.next().unwrap();
+    assert!(!iter.is_valid());
+}
+
+#[test]
+fn test_task2_merge_multi_duplicates() {
+    // 3 iterators all start at key "a"
+    let i1 = MockIterator::new(vec![
+        (Bytes::from("a"), Bytes::from("1")),
+        (Bytes::from("b"), Bytes::from("1")),
+    ]);
+    let i2 = MockIterator::new(vec![
+        (Bytes::from("a"), Bytes::from("2")),
+        (Bytes::from("c"), Bytes::from("2")),
+    ]);
+    let i3 = MockIterator::new(vec![
+        (Bytes::from("a"), Bytes::from("3")),
+        (Bytes::from("d"), Bytes::from("3")),
+    ]);
+
+    let mut iter = MergeIterator::create(vec![Box::new(i1), Box::new(i2), Box::new(i3)]);
+
+    // Must yield "a" ONCE (from i1), then "b", "c", "d"
+    check_iter_result_by_key(
+        &mut iter,
+        vec![
+            (Bytes::from("a"), Bytes::from("1")),
+            (Bytes::from("b"), Bytes::from("1")),
+            (Bytes::from("c"), Bytes::from("2")),
+            (Bytes::from("d"), Bytes::from("3")),
+        ],
+    );
+}
+
+#[test]
+fn test_task2_merge_tie_breaker_order() {
+    let i1 = MockIterator::new(vec![(Bytes::from("key"), Bytes::from("v1"))]);
+    let i2 = MockIterator::new(vec![(Bytes::from("key"), Bytes::from("v2"))]);
+
+    // Order 1: i1 first -> should pick v1
+    let iter1 = MergeIterator::create(vec![Box::new(i1.clone()), Box::new(i2.clone())]);
+    assert_eq!(iter1.value(), b"v1");
+
+    // Order 2: i2 first -> should pick v2
+    let iter2 = MergeIterator::create(vec![Box::new(i2), Box::new(i1)]);
+    assert_eq!(iter2.value(), b"v2");
 }
