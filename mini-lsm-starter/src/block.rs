@@ -45,16 +45,62 @@ impl Block {
 
     /// Decode from the data layout, transform the input `data` to a single `Block`
     pub fn decode(data: &[u8]) -> Self {
+        // 1. Ensure buffer has at least 2 bytes for num_of_elements
+        assert!(data.len() >= 2, "data slice too small");
+
         let num_of_elements = (&data[data.len() - 2..]).get_u16() as usize;
 
-        let offsets_start = data.len() - 2 - num_of_elements * 2;
+        // 2. Ensure buffer is large enough for offsets array + num_of_elements u16
+        assert!(
+            data.len() >= 2 + num_of_elements * 2,
+            "data slice smaller than offset table"
+        );
 
+        let offsets_start = data.len() - 2 - num_of_elements * 2;
         let raw_data = data[..offsets_start].to_vec();
 
         let mut offsets = Vec::with_capacity(num_of_elements);
         let mut offsets_ptr = &data[offsets_start..data.len() - 2];
-        for _ in 0..num_of_elements {
-            offsets.push(offsets_ptr.get_u16());
+
+        for i in 0..num_of_elements {
+            let offset = offsets_ptr.get_u16();
+
+            // 3. Compare current offset with previous offset (offsets[i - 1])
+            if i > 0 {
+                assert!(
+                    offsets[i - 1] < offset,
+                    "offsets are not strictly increasing"
+                );
+            }
+
+            offsets.push(offset);
+        }
+
+        // 4. Safely validate the last offset bound if elements exist
+        if let Some(&last_offset) = offsets.last() {
+            let last_offset = last_offset as usize;
+
+            // 1. Ensure at least 4 bytes exist for key_len (2B) + val_len (2B) headers
+            assert!(
+                last_offset + 4 <= offsets_start,
+                "last entry header exceeds data section"
+            );
+
+            // 2. Read key_len and check boundary
+            let key_len = (&raw_data[last_offset..last_offset + 2]).get_u16() as usize;
+            let val_len_offset = last_offset + 2 + key_len;
+            assert!(
+                val_len_offset + 2 <= offsets_start,
+                "key extends past data section"
+            );
+
+            // 3. Read val_len and verify total entry end boundary
+            let val_len = (&raw_data[val_len_offset..val_len_offset + 2]).get_u16() as usize;
+            let entry_end = val_len_offset + 2 + val_len;
+            assert!(
+                entry_end <= offsets_start,
+                "value extends past data section"
+            );
         }
 
         Block {
