@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 pub use builder::SsTableBuilder;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut};
 pub use iterator::SsTableIterator;
 
 use crate::block::Block;
@@ -215,16 +215,28 @@ impl SsTable {
 
     /// Read a block from disk, with block cache. (Day 4)
     pub fn read_block_cached(&self, block_idx: usize) -> Result<Arc<Block>> {
-        unimplemented!()
+        if let Some(ref block_cache) = self.block_cache {
+            let blk = block_cache
+                .try_get_with((self.id, block_idx), || self.read_block(block_idx))
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            Ok(blk)
+        } else {
+            // Fallback if block cache is disabled
+            self.read_block(block_idx)
+        }
     }
 
     /// Find the block that may contain `key`.
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        self.block_meta
-            .partition_point(|meta| meta.first_key.as_key_slice() <= key)
-            .saturating_sub(1)
+        let idx = self.block_meta
+            .partition_point(|meta| meta.first_key.as_key_slice() <= key);
+        if idx == 0 {
+            0
+        } else {
+            idx - 1
+        }
     }
 
     /// Get number of data blocks.
