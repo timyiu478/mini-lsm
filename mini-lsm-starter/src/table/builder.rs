@@ -18,9 +18,9 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use super::{BlockMeta, SsTable};
-use bytes::{BufMut};
-use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
 use crate::table::FileObject;
+use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
+use bytes::BufMut;
 
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
@@ -35,13 +35,13 @@ pub struct SsTableBuilder {
 impl SsTableBuilder {
     /// Create a builder based on target block size.
     pub fn new(block_size: usize) -> Self {
-        SsTableBuilder{
+        SsTableBuilder {
             builder: BlockBuilder::new(block_size),
             first_key: Vec::new(),
             last_key: Vec::new(),
             data: Vec::new(),
             meta: Vec::new(),
-            block_size
+            block_size,
         }
     }
 
@@ -51,10 +51,14 @@ impl SsTableBuilder {
         let old_builder = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
         let block = old_builder.build();
 
-        let block_meta = BlockMeta{
+        let block_meta = BlockMeta {
             offset: self.data.len(),
-            first_key: KeySlice::from_slice(&self.first_key).to_key_vec().into_key_bytes(),
-            last_key: KeySlice::from_slice(&self.last_key).to_key_vec().into_key_bytes(),
+            first_key: KeySlice::from_slice(&self.first_key)
+                .to_key_vec()
+                .into_key_bytes(),
+            last_key: KeySlice::from_slice(&self.last_key)
+                .to_key_vec()
+                .into_key_bytes(),
         };
 
         self.meta.push(block_meta);
@@ -110,14 +114,16 @@ impl SsTableBuilder {
 
         let file = FileObject::create(path.as_ref(), data)?;
 
-        Ok(SsTable{
+        Ok(SsTable {
             file,
             id,
             block_meta: self.meta,
             block_meta_offset: block_meta_offset,
             block_cache,
             first_key: first_key,
-            last_key: KeySlice::from_slice(&self.last_key).to_key_vec().into_key_bytes(),
+            last_key: KeySlice::from_slice(&self.last_key)
+                .to_key_vec()
+                .into_key_bytes(),
             bloom: None,
             max_ts: 0,
         })

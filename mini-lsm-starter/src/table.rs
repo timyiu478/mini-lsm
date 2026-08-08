@@ -45,10 +45,7 @@ impl BlockMeta {
     /// Encode block meta to a buffer.
     /// You may add extra fields to the buffer,
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
-    pub fn encode_block_meta(
-        block_meta: &[BlockMeta],
-        buf: &mut Vec<u8>,
-    ) {
+    pub fn encode_block_meta(block_meta: &[BlockMeta], buf: &mut Vec<u8>) {
         buf.put_u32(block_meta.len() as u32);
 
         for meta in block_meta {
@@ -74,11 +71,15 @@ impl BlockMeta {
 
             let first_key_len = buf.get_u16() as usize;
             let first_key_bytes = buf.copy_to_bytes(first_key_len);
-            let first_key = KeySlice::from_slice(&first_key_bytes).to_key_vec().into_key_bytes();
+            let first_key = KeySlice::from_slice(&first_key_bytes)
+                .to_key_vec()
+                .into_key_bytes();
 
             let last_key_len = buf.get_u16() as usize;
             let last_key_bytes = buf.copy_to_bytes(last_key_len);
-            let last_key = KeySlice::from_slice(&last_key_bytes).to_key_vec().into_key_bytes();
+            let last_key = KeySlice::from_slice(&last_key_bytes)
+                .to_key_vec()
+                .into_key_bytes();
 
             block_meta.push(BlockMeta {
                 offset,
@@ -151,7 +152,7 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        let metadata_offset_bytes = file.read(file.size()-4, 4)?;
+        let metadata_offset_bytes = file.read(file.size() - 4, 4)?;
         let block_meta_offset = metadata_offset_bytes.as_slice().get_u32() as usize;
 
         let metadata_size = file.size() - block_meta_offset as u64 - 4;
@@ -160,10 +161,9 @@ impl SsTable {
         let block_meta = BlockMeta::decode_block_meta(metadata_bytes.as_slice());
 
         let first_key = block_meta[0].first_key.clone();
-        let last_key = block_meta[block_meta.len()-1].last_key.clone();
+        let last_key = block_meta[block_meta.len() - 1].last_key.clone();
 
-
-        Ok(SsTable{
+        Ok(SsTable {
             block_meta,
             file,
             block_meta_offset,
@@ -230,13 +230,10 @@ impl SsTable {
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        let idx = self.block_meta
+        let idx = self
+            .block_meta
             .partition_point(|meta| meta.first_key.as_key_slice() <= key);
-        if idx == 0 {
-            0
-        } else {
-            idx - 1
-        }
+        if idx == 0 { 0 } else { idx - 1 }
     }
 
     /// Get number of data blocks.

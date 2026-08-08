@@ -41,7 +41,7 @@ impl SsTableIterator {
     /// Seek to the first key-value pair in the first data block.
     pub fn seek_to_first(&mut self) -> Result<()> {
         let block = self.table.read_block_cached(0)?;
-        
+
         self.blk_iter = BlockIterator::create_and_seek_to_first(block);
         self.blk_idx = 0;
 
@@ -54,7 +54,7 @@ impl SsTableIterator {
         let block = table.read_block_cached(blk_idx)?;
         let mut blk_iter = BlockIterator::create_and_seek_to_key(block, key);
 
-        // If the search key is greater than all keys in the current block, 
+        // If the search key is greater than all keys in the current block,
         // the iterator will become invalid. We must fall over to the next block.
         if !blk_iter.is_valid() && blk_idx + 1 < table.block_meta.len() {
             blk_idx += 1;
@@ -118,7 +118,7 @@ impl StorageIterator for SsTableIterator {
         // If the current block iterator is exhausted and there are more blocks
         if !self.blk_iter.is_valid() && self.blk_idx + 1 < self.table.block_meta.len() {
             self.blk_idx += 1;
-            
+
             let block = self.table.read_block_cached(self.blk_idx)?;
             self.blk_iter = BlockIterator::create_and_seek_to_first(block);
         }
