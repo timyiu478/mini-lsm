@@ -1,3 +1,5 @@
+# Iterators
+
 ## Q. Merge iter1 = [b->delete, c->4] with iter2 = [a->1, b->2, c->3], where iter1 is newer. Write the internal merged stream first, including tombstones, and then the user-visible stream. What breaks if tombstones are removed before duplicate versions are resolved?
 
 If we prematurely filter out tombstones from iter1 before merging/deduplicating with older iterators, here is what goes wrong:
