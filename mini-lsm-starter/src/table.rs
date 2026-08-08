@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 pub(crate) mod bloom;
 mod builder;
 mod iterator;
@@ -25,7 +22,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 pub use builder::SsTableBuilder;
-use bytes::Buf;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 pub use iterator::SsTableIterator;
 
 use crate::block::Block;
@@ -50,15 +47,47 @@ impl BlockMeta {
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
     pub fn encode_block_meta(
         block_meta: &[BlockMeta],
-        #[allow(clippy::ptr_arg)] // remove this allow after you finish
         buf: &mut Vec<u8>,
     ) {
-        unimplemented!()
+        buf.put_u32(block_meta.len() as u32);
+
+        for meta in block_meta {
+            buf.put_u32(meta.offset as u32);
+
+            buf.put_u16(meta.first_key.len() as u16);
+            buf.put_slice(meta.first_key.raw_ref());
+
+            buf.put_u16(meta.last_key.len() as u16);
+            buf.put_slice(meta.last_key.raw_ref());
+        }
     }
 
     /// Decode block meta from a buffer.
     pub fn decode_block_meta(buf: impl Buf) -> Vec<BlockMeta> {
-        unimplemented!()
+        let mut buf = buf;
+
+        let len = buf.get_u32();
+        let mut block_meta = Vec::with_capacity(len as usize);
+
+        for _ in 0..len {
+            let offset = buf.get_u32() as usize;
+
+            let first_key_len = buf.get_u16() as usize;
+            let first_key_bytes = buf.copy_to_bytes(first_key_len);
+            let first_key = KeySlice::from_slice(&first_key_bytes).to_key_vec().into_key_bytes();
+
+            let last_key_len = buf.get_u16() as usize;
+            let last_key_bytes = buf.copy_to_bytes(last_key_len);
+            let last_key = KeySlice::from_slice(&last_key_bytes).to_key_vec().into_key_bytes();
+
+            block_meta.push(BlockMeta {
+                offset,
+                first_key,
+                last_key,
+            });
+        }
+
+        block_meta
     }
 }
 
@@ -122,7 +151,29 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        unimplemented!()
+        let metadata_offset_bytes = file.read(file.size()-4, 4)?;
+        let block_meta_offset = metadata_offset_bytes.as_slice().get_u32() as usize;
+
+        let metadata_size = file.size() - block_meta_offset as u64 - 4;
+        let metadata_bytes = file.read(block_meta_offset as u64, metadata_size)?;
+
+        let block_meta = BlockMeta::decode_block_meta(metadata_bytes.as_slice());
+
+        let first_key = block_meta[0].first_key.clone();
+        let last_key = block_meta[block_meta.len()-1].last_key.clone();
+
+
+        Ok(SsTable{
+            block_meta,
+            file,
+            block_meta_offset,
+            id,
+            block_cache,
+            first_key,
+            last_key,
+            bloom: None,
+            max_ts: 0,
+        })
     }
 
     /// Create a mock SST with only first key + last key metadata
@@ -147,7 +198,19 @@ impl SsTable {
 
     /// Read a block from the disk.
     pub fn read_block(&self, block_idx: usize) -> Result<Arc<Block>> {
-        unimplemented!()
+        let meta = &self.block_meta[block_idx];
+
+        let end_offset = if block_idx + 1 < self.block_meta.len() {
+            self.block_meta[block_idx + 1].offset as u64
+        } else {
+            self.block_meta_offset as u64
+        };
+
+        let len = end_offset - meta.offset as u64;
+
+        let data = self.file.read(meta.offset as u64, len)?;
+
+        Ok(Arc::new(Block::decode(&data)))
     }
 
     /// Read a block from disk, with block cache. (Day 4)
@@ -159,7 +222,9 @@ impl SsTable {
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        unimplemented!()
+        self.block_meta
+            .partition_point(|meta| meta.first_key.as_key_slice() <= key)
+            .saturating_sub(1)
     }
 
     /// Get number of data blocks.
