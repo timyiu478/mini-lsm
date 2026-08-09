@@ -326,13 +326,17 @@ fn test_task3_storage_get() {
 #[test]
 fn test_task3_storage_get_overlap_precedence() {
     let dir = tempdir().unwrap();
-    let storage = Arc::new(LsmStorageInner::open(&dir, LsmStorageOptions::default_for_week1_test()).unwrap());
-    
+    let storage =
+        Arc::new(LsmStorageInner::open(&dir, LsmStorageOptions::default_for_week1_test()).unwrap());
+
     // 1. Create an SST with v1
     let sst = generate_sst(
         10,
         dir.path().join("10.sst"),
-        vec![(Bytes::from_static(b"overlap_key"), Bytes::from_static(b"v1_sst"))],
+        vec![(
+            Bytes::from_static(b"overlap_key"),
+            Bytes::from_static(b"v1_sst"),
+        )],
         Some(storage.block_cache.clone()),
     );
     {
@@ -345,11 +349,16 @@ fn test_task3_storage_get_overlap_precedence() {
 
     // 2. Put v2 in memtable, then freeze it to imm_memtable
     storage.put(b"overlap_key", b"v2_imm").unwrap();
-    storage.force_freeze_memtable(&storage.state_lock.lock()).unwrap();
+    storage
+        .force_freeze_memtable(&storage.state_lock.lock())
+        .unwrap();
 
     // 3. Put v3 in active memtable
     storage.put(b"overlap_key", b"v3_active").unwrap();
 
     // 4. Get should return the active memtable's value
-    assert_eq!(storage.get(b"overlap_key").unwrap(), Some(Bytes::from_static(b"v3_active")));
+    assert_eq!(
+        storage.get(b"overlap_key").unwrap(),
+        Some(Bytes::from_static(b"v3_active"))
+    );
 }

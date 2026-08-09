@@ -13,16 +13,17 @@
 // limitations under the License.
 
 use anyhow::Result;
-use std::ops::Bound;
 use bytes::Bytes;
+use std::ops::Bound;
 
 use crate::{
-    iterators::{StorageIterator, merge_iterator::MergeIterator, two_merge_iterator::TwoMergeIterator},
+    iterators::{
+        StorageIterator, merge_iterator::MergeIterator, two_merge_iterator::TwoMergeIterator,
+    },
+    key::KeyBytes,
     mem_table::MemTableIterator,
     table::SsTableIterator,
-    key::{KeyBytes}
 };
-
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the course for multiple times.
 type LsmIteratorInner =
@@ -30,12 +31,15 @@ type LsmIteratorInner =
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
-    end_bound: Bound<Bytes>
+    end_bound: Bound<Bytes>,
 }
 
 impl LsmIterator {
     pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
-        let mut iter = Self { inner: iter, end_bound };
+        let mut iter = Self {
+            inner: iter,
+            end_bound,
+        };
         iter.move_to_non_delete()?;
         Ok(iter)
     }
@@ -54,9 +58,13 @@ impl StorageIterator for LsmIterator {
         let inner_is_valid = self.inner.is_valid();
 
         match &self.end_bound {
-            Bound::Included(b) => inner_is_valid && self.inner.key() <= KeyBytes::from_bytes(b.clone()).as_key_slice(),
-            Bound::Excluded(b) => inner_is_valid && self.inner.key() < KeyBytes::from_bytes(b.clone()).as_key_slice(),
-            Bound::Unbounded => inner_is_valid
+            Bound::Included(b) => {
+                inner_is_valid && self.inner.key() <= KeyBytes::from_bytes(b.clone()).as_key_slice()
+            }
+            Bound::Excluded(b) => {
+                inner_is_valid && self.inner.key() < KeyBytes::from_bytes(b.clone()).as_key_slice()
+            }
+            Bound::Unbounded => inner_is_valid,
         }
     }
 

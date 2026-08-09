@@ -37,7 +37,7 @@ impl<
             is_a: true,
             is_valid: true,
         };
-        
+
         iter.skip_b_and_choose()?;
         Ok(iter)
     }
@@ -98,9 +98,9 @@ impl<
         } else {
             self.b.next()?;
         }
-        
+
         self.skip_b_and_choose()?;
-        
+
         Ok(())
     }
 }

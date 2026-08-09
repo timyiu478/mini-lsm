@@ -27,15 +27,15 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::StorageIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::iterators::StorageIterator;
+use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
 use crate::table::{SsTable, SsTableIterator};
-use crate::key::KeySlice;
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -321,10 +321,18 @@ impl LsmStorageInner {
         }
 
         let mut ssts = Vec::with_capacity(snapshot.l0_sstables.len());
-        ssts.extend(snapshot.l0_sstables.iter().map(|id| snapshot.sstables[id].clone()));
+        ssts.extend(
+            snapshot
+                .l0_sstables
+                .iter()
+                .map(|id| snapshot.sstables[id].clone()),
+        );
         let mut sst_iters = Vec::with_capacity(ssts.len());
         for sst in ssts {
-            sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(sst, KeySlice::from_slice(_key))?));
+            sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(
+                sst,
+                KeySlice::from_slice(_key),
+            )?));
         }
         let mut sst_merge_iter = MergeIterator::create(sst_iters);
 
@@ -332,7 +340,8 @@ impl LsmStorageInner {
             sst_merge_iter.next()?;
         }
 
-        if sst_merge_iter.key() == KeySlice::from_slice(_key) && !sst_merge_iter.value().is_empty() {
+        if sst_merge_iter.key() == KeySlice::from_slice(_key) && !sst_merge_iter.value().is_empty()
+        {
             return Ok(Some(Bytes::copy_from_slice(sst_merge_iter.value())));
         }
 
@@ -462,8 +471,13 @@ impl LsmStorageInner {
 
         // Collect l0 sstables
         let mut ssts = Vec::with_capacity(snapshot.l0_sstables.len());
-        ssts.extend(snapshot.l0_sstables.iter().map(|id| snapshot.sstables[id].clone()));
-        
+        ssts.extend(
+            snapshot
+                .l0_sstables
+                .iter()
+                .map(|id| snapshot.sstables[id].clone()),
+        );
+
         // Map each sstable to a boxed sst iterator
         let mut lower_unbounded = false;
         let lower_key = KeySlice::from_slice(match _lower {
@@ -479,7 +493,9 @@ impl LsmStorageInner {
             if lower_unbounded {
                 sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(sst)?));
             } else {
-                sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(sst, lower_key)?));
+                sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(
+                    sst, lower_key,
+                )?));
             }
         }
 
