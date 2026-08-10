@@ -35,7 +35,7 @@ use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableIterator};
+use crate::table::{SsTable, SsTableIterator, SsTableBuilder, FileObject};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -257,7 +257,37 @@ impl LsmStorageInner {
     /// not exist.
     pub(crate) fn open(path: impl AsRef<Path>, options: LsmStorageOptions) -> Result<Self> {
         let path = path.as_ref();
-        let state = LsmStorageState::create(&options);
+
+        let mut max_sst_id = 0;
+
+        let mut state = LsmStorageState::create(&options);
+        let block_cache = Arc::new(BlockCache::new(1024));
+
+        if !path.exists() {
+            std::fs::create_dir_all(path)?;
+        } else {
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                let file_path = entry.path();
+                
+                // Check for .sst extension
+                if file_path.extension().and_then(|s| s.to_str()) == Some("sst") {
+                    if let Some(file_name) = file_path.file_stem().and_then(|s| s.to_str()) {
+                        if let Ok(id) = file_name.parse::<usize>() {
+                            max_sst_id = max_sst_id.max(id);
+                            // Open SSTable and add to state
+                            let file = FileObject::open(&file_path)?;
+                            let sst = SsTable::open(id, Some(block_cache.clone()), file)?;
+                            
+                            state.l0_sstables.push(id);
+                            state.sstables.insert(id, Arc::new(sst)); 
+                        }
+                    }
+                }
+            }
+
+            state.l0_sstables.sort_by(|a, b| b.cmp(a));
+        }
 
         let compaction_controller = match &options.compaction_options {
             CompactionOptions::Leveled(options) => {
@@ -276,8 +306,8 @@ impl LsmStorageInner {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
             path: path.to_path_buf(),
-            block_cache: Arc::new(BlockCache::new(1024)),
-            next_sst_id: AtomicUsize::new(1),
+            block_cache,
+            next_sst_id: AtomicUsize::new(max_sst_id + 1),
             compaction_controller,
             manifest: None,
             options: options.into(),
@@ -439,7 +469,41 @@ impl LsmStorageInner {
 
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
-        unimplemented!()
+        let _state_lock = self.state_lock.lock();
+
+        let memtable_to_flush = {
+            let guard = self.state.read();
+            let Some(memtable) = guard.imm_memtables.last() else {
+                return Ok(());
+            };
+            memtable.clone()
+        };
+
+        let mut sst_builder = SsTableBuilder::new(self.options.block_size);
+
+        memtable_to_flush.flush(&mut sst_builder)?; 
+
+        let sst_id = memtable_to_flush.id();
+
+        let path_of_sst = self.path_of_sst(sst_id);
+
+        let sst = sst_builder.build(
+            sst_id,
+            Some(self.block_cache.clone()),
+            path_of_sst
+        )?;
+
+        {
+            let mut guard = self.state.write();
+            let mut snapshot = guard.as_ref().clone();
+            let removed = snapshot.imm_memtables.pop().unwrap();
+            assert_eq!(removed.id(), sst_id);
+            snapshot.l0_sstables.insert(0, sst_id);
+            snapshot.sstables.insert(sst_id, Arc::new(sst));
+            *guard = Arc::new(snapshot);
+        }
+
+        Ok(())
     }
 
     pub fn new_txn(&self) -> Result<()> {
