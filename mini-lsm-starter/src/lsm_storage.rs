@@ -170,7 +170,17 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        unimplemented!()
+        self.inner.force_freeze_memtable(&self.inner.state_lock.lock())?;
+
+        loop {
+            let state = self.inner.state.read();
+            if state.imm_memtables.is_empty() {
+                return Ok(());
+            }
+            drop(state);
+
+            self.inner.force_flush_next_imm_memtable()?;
+        }
     }
 
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
