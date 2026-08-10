@@ -35,7 +35,7 @@ use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableIterator, SsTableBuilder, FileObject};
+use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -170,7 +170,8 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        self.inner.force_freeze_memtable(&self.inner.state_lock.lock())?;
+        self.inner
+            .force_freeze_memtable(&self.inner.state_lock.lock())?;
 
         loop {
             let state = self.inner.state.read();
@@ -279,7 +280,7 @@ impl LsmStorageInner {
             for entry in std::fs::read_dir(path)? {
                 let entry = entry?;
                 let file_path = entry.path();
-                
+
                 // Check for .sst extension
                 if file_path.extension().and_then(|s| s.to_str()) == Some("sst") {
                     if let Some(file_name) = file_path.file_stem().and_then(|s| s.to_str()) {
@@ -288,9 +289,9 @@ impl LsmStorageInner {
                             // Open SSTable and add to state
                             let file = FileObject::open(&file_path)?;
                             let sst = SsTable::open(id, Some(block_cache.clone()), file)?;
-                            
+
                             state.l0_sstables.push(id);
-                            state.sstables.insert(id, Arc::new(sst)); 
+                            state.sstables.insert(id, Arc::new(sst));
                         }
                     }
                 }
@@ -360,6 +361,8 @@ impl LsmStorageInner {
             }
         }
 
+        let key_slice = KeySlice::from_slice(_key);
+
         let mut ssts = Vec::with_capacity(snapshot.l0_sstables.len());
         ssts.extend(
             snapshot
@@ -369,6 +372,11 @@ impl LsmStorageInner {
         );
         let mut sst_iters = Vec::with_capacity(ssts.len());
         for sst in ssts {
+            if sst.first_key().as_key_slice() > key_slice
+                || sst.last_key().as_key_slice() < key_slice
+            {
+                continue;
+            }
             sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(
                 sst,
                 KeySlice::from_slice(_key),
@@ -380,7 +388,9 @@ impl LsmStorageInner {
             sst_merge_iter.next()?;
         }
 
-        if sst_merge_iter.key() == KeySlice::from_slice(_key) && !sst_merge_iter.value().is_empty()
+        if sst_merge_iter.is_valid()
+            && sst_merge_iter.key() == key_slice
+            && !sst_merge_iter.value().is_empty()
         {
             return Ok(Some(Bytes::copy_from_slice(sst_merge_iter.value())));
         }
@@ -491,17 +501,13 @@ impl LsmStorageInner {
 
         let mut sst_builder = SsTableBuilder::new(self.options.block_size);
 
-        memtable_to_flush.flush(&mut sst_builder)?; 
+        memtable_to_flush.flush(&mut sst_builder)?;
 
         let sst_id = memtable_to_flush.id();
 
         let path_of_sst = self.path_of_sst(sst_id);
 
-        let sst = sst_builder.build(
-            sst_id,
-            Some(self.block_cache.clone()),
-            path_of_sst
-        )?;
+        let sst = sst_builder.build(sst_id, Some(self.block_cache.clone()), path_of_sst)?;
 
         {
             let mut guard = self.state.write();
@@ -543,34 +549,35 @@ impl LsmStorageInner {
             mem_iters.push(Box::new(memtable.scan(_lower, _upper)));
         }
 
-        // Collect l0 sstables
-        let mut ssts = Vec::with_capacity(snapshot.l0_sstables.len());
-        ssts.extend(
-            snapshot
-                .l0_sstables
-                .iter()
-                .map(|id| snapshot.sstables[id].clone()),
-        );
+        // Create SST iterators
+        let mut sst_iters = Vec::with_capacity(snapshot.l0_sstables.len());
+        for id in &snapshot.l0_sstables {
+            let sst = snapshot.sstables[id].clone();
 
-        // Map each sstable to a boxed sst iterator
-        let mut lower_unbounded = false;
-        let lower_key = KeySlice::from_slice(match _lower {
-            Bound::Included(b) => b,
-            Bound::Excluded(b) => b,
-            Bound::Unbounded => {
-                lower_unbounded = true;
-                &[]
+            // Check if SST range [first_key, last_key] overlaps with [_lower, _upper]
+            if match _lower {
+                Bound::Included(l) => sst.last_key().as_key_slice() < KeySlice::from_slice(l),
+                Bound::Excluded(l) => sst.last_key().as_key_slice() <= KeySlice::from_slice(l),
+                Bound::Unbounded => false,
+            } {
+                continue; // SST ends before range starts
             }
-        });
-        let mut sst_iters = Vec::with_capacity(ssts.len());
-        for sst in ssts {
-            if lower_unbounded {
-                sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(sst)?));
-            } else {
-                sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(
-                    sst, lower_key,
-                )?));
+
+            if match _upper {
+                Bound::Included(u) => sst.first_key().as_key_slice() > KeySlice::from_slice(u),
+                Bound::Excluded(u) => sst.first_key().as_key_slice() >= KeySlice::from_slice(u),
+                Bound::Unbounded => false,
+            } {
+                continue; // SST starts after range ends
             }
+
+            let iter = match _lower {
+                Bound::Included(l) | Bound::Excluded(l) => {
+                    SsTableIterator::create_and_seek_to_key(sst, KeySlice::from_slice(l))?
+                }
+                Bound::Unbounded => SsTableIterator::create_and_seek_to_first(sst)?,
+            };
+            sst_iters.push(Box::new(iter));
         }
 
         // Wrap in MergeIterator and SSTIterator -> TwoMergeIterator -> LsmIterator -> FusedIterator

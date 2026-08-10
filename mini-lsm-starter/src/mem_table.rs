@@ -23,7 +23,7 @@ use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;
-use crate::key::{KeySlice, Key};
+use crate::key::{Key, KeySlice};
 use crate::table::SsTableBuilder;
 use crate::wal::Wal;
 
@@ -168,7 +168,7 @@ impl MemTable {
         for entry in self.map.iter() {
             let key = entry.key();
             let value = entry.value();
-            
+
             _builder.add(KeySlice::from_slice(&key[..]), &value[..]);
         }
 

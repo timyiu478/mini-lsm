@@ -158,7 +158,7 @@ impl LsmStorageInner {
     }
 
     fn trigger_flush(&self) -> Result<()> {
-    let state = self.state.read();
+        let state = self.state.read();
         let has_imm = !state.imm_memtables.is_empty();
         drop(state);
 
