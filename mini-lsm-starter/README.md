@@ -1,3 +1,1 @@
-# mini-lsm-starter
-
-Starter code for Mini-LSM.
+My implementation of an LSM-tree storage engine in Rust ^_^
