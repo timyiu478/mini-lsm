@@ -34,13 +34,35 @@ pub struct BlockIterator {
 
 impl BlockIterator {
     fn new(block: Arc<Block>) -> Self {
-        Self {
+        let mut iter = Self {
             block,
             key: KeyVec::new(),
             value_range: (0, 0),
             idx: 0,
             first_key: KeyVec::new(),
+        };
+
+        // Populate first_key directly upon initialization for binary searches
+        // and decoding subsequent entries.
+        if !iter.block.offsets.is_empty() {
+            let offset = iter.block.offsets[0] as usize;
+            let overlap_len =
+                u16::from_be_bytes(iter.block.data[offset..(offset + 2)].try_into().unwrap())
+                    as usize;
+            assert!(
+                overlap_len == 0,
+                "the overlap length of the first key must be 0"
+            );
+            let rest_len = u16::from_be_bytes(
+                iter.block.data[(offset + 2)..(offset + 4)]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            let first_key_bytes = &iter.block.data[(offset + 4)..(offset + 4 + rest_len)];
+            iter.first_key = KeySlice::from_slice(first_key_bytes).to_key_vec();
         }
+
+        iter
     }
 
     /// Creates a block iterator and seek to the first entry.
@@ -86,21 +108,33 @@ impl BlockIterator {
 
         let offset = self.block.offsets[self.idx] as usize;
 
-        // 1. Parse Key Length & Key
-        let key_len_bytes = self.block.data[offset..offset + 2]
-            .try_into()
-            .expect("slice with incorrect length");
-        let key_len = u16::from_be_bytes(key_len_bytes) as usize;
+        // Parse Overlap Length & Rest Length
+        let overlap_len = u16::from_be_bytes(
+            self.block.data[offset..(offset + 2)]
+                .try_into()
+                .expect("slice with incorrect length"),
+        ) as usize;
 
-        let key = &self.block.data[(offset + 2)..(offset + 2 + key_len)];
-        self.key = KeySlice::from_slice(key).to_key_vec();
+        let rest_len = u16::from_be_bytes(
+            self.block.data[(offset + 2)..(offset + 4)]
+                .try_into()
+                .expect("slice with incorrect length"),
+        ) as usize;
 
-        // 2. Parse Value Length & Value Range
-        let val_len_offset = offset + 2 + key_len;
-        let val_len_bytes = self.block.data[val_len_offset..val_len_offset + 2]
-            .try_into()
-            .expect("slice with incorrect length");
-        let val_len = u16::from_be_bytes(val_len_bytes) as usize;
+        let rest_key = &self.block.data[(offset + 4)..(offset + 4 + rest_len)];
+
+        // Reconstruct Key
+        let mut reconstructed_key = self.first_key.raw_ref()[..overlap_len].to_vec();
+        reconstructed_key.extend_from_slice(rest_key);
+        self.key = KeySlice::from_slice(&reconstructed_key).to_key_vec();
+
+        // Parse Value Length & Value Range
+        let val_len_offset = offset + 4 + rest_len;
+        let val_len = u16::from_be_bytes(
+            self.block.data[val_len_offset..(val_len_offset + 2)]
+                .try_into()
+                .expect("slice with incorrect length"),
+        ) as usize;
 
         let val_start = val_len_offset + 2;
         self.value_range = (val_start, val_start + val_len);
@@ -109,9 +143,6 @@ impl BlockIterator {
     /// Seeks to the first key in the block.
     pub fn seek_to_first(&mut self) {
         self.seek_to_index(0);
-        if self.is_valid() {
-            self.first_key = self.key.clone();
-        }
     }
 
     /// Move to the next key in the block.
@@ -130,13 +161,27 @@ impl BlockIterator {
             let mid = (left + right) / 2;
             let offset = self.block.offsets[mid] as usize;
 
-            let key_len_bytes = self.block.data[offset..offset + 2]
-                .try_into()
-                .expect("slice with incorrect length");
-            let key_len = u16::from_be_bytes(key_len_bytes) as usize;
+            // Parse Overlap Length
+            let overlap_len = u16::from_be_bytes(
+                self.block.data[offset..(offset + 2)]
+                    .try_into()
+                    .expect("slice with incorrect length"),
+            ) as usize;
 
-            let key_slice =
-                KeySlice::from_slice(&self.block.data[(offset + 2)..(offset + 2 + key_len)]);
+            // Parse Rest Length
+            let rest_len = u16::from_be_bytes(
+                self.block.data[(offset + 2)..(offset + 4)]
+                    .try_into()
+                    .expect("slice with incorrect length"),
+            ) as usize;
+
+            // Extract the rest of the key
+            let rest_key = &self.block.data[(offset + 4)..(offset + 4 + rest_len)];
+
+            // Reconstruct the full key to perform the comparison
+            let mut reconstructed_key = self.first_key.raw_ref()[..overlap_len].to_vec();
+            reconstructed_key.extend_from_slice(rest_key);
+            let key_slice = KeySlice::from_slice(&reconstructed_key);
 
             if key_slice < key {
                 left = mid + 1;
