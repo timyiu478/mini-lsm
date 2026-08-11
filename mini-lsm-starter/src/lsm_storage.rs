@@ -20,6 +20,7 @@ use std::sync::atomic::AtomicUsize;
 
 use anyhow::Result;
 use bytes::Bytes;
+use farmhash;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -372,6 +373,12 @@ impl LsmStorageInner {
         );
         let mut sst_iters = Vec::with_capacity(ssts.len());
         for sst in ssts {
+            let key_hash = farmhash::fingerprint32(_key);
+            if let Some(bloom) = &sst.bloom
+                && !bloom.may_contain(key_hash)
+            {
+                continue;
+            }
             if sst.first_key().as_key_slice() > key_slice
                 || sst.last_key().as_key_slice() < key_slice
             {
