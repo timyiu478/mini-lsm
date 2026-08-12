@@ -29,6 +29,7 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::StorageIterator;
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
@@ -346,6 +347,7 @@ impl LsmStorageInner {
             Arc::clone(&guard)
         };
 
+        // 1. Check active memtable
         if let Some(val) = snapshot.memtable.get(_key) {
             if val.is_empty() {
                 return Ok(None); // Deletion tombstone
@@ -353,6 +355,7 @@ impl LsmStorageInner {
             return Ok(Some(val));
         }
 
+        // 2. Check immutable memtable
         for imm_memtable in &snapshot.imm_memtables {
             if let Some(val) = imm_memtable.get(_key) {
                 if val.is_empty() {
@@ -364,6 +367,7 @@ impl LsmStorageInner {
 
         let key_slice = KeySlice::from_slice(_key);
 
+        // 3. Check L0 SSTables
         let mut ssts = Vec::with_capacity(snapshot.l0_sstables.len());
         ssts.extend(
             snapshot
@@ -371,6 +375,7 @@ impl LsmStorageInner {
                 .iter()
                 .map(|id| snapshot.sstables[id].clone()),
         );
+
         let mut sst_iters = Vec::with_capacity(ssts.len());
         for sst in ssts {
             let key_hash = farmhash::fingerprint32(_key);
@@ -400,6 +405,24 @@ impl LsmStorageInner {
             && !sst_merge_iter.value().is_empty()
         {
             return Ok(Some(Bytes::copy_from_slice(sst_merge_iter.value())));
+        }
+
+        // 4. Check L1 SSTables
+        if !snapshot.levels.is_empty() {
+            let l1_ssts: Vec<_> = snapshot.levels[0]
+                .1
+                .iter()
+                .map(|id| snapshot.sstables[id].clone())
+                .collect();
+
+            let l1_iter = SstConcatIterator::create_and_seek_to_key(l1_ssts, key_slice)?;
+            if l1_iter.is_valid() && l1_iter.key() == key_slice {
+                return Ok(if l1_iter.value().is_empty() {
+                    None
+                } else {
+                    Some(Bytes::copy_from_slice(l1_iter.value()))
+                });
+            }
         }
 
         Ok(None)
@@ -556,7 +579,7 @@ impl LsmStorageInner {
             mem_iters.push(Box::new(memtable.scan(_lower, _upper)));
         }
 
-        // Create SST iterators
+        // Create L0 SST iterators
         let mut sst_iters = Vec::with_capacity(snapshot.l0_sstables.len());
         for id in &snapshot.l0_sstables {
             let sst = snapshot.sstables[id].clone();
@@ -587,15 +610,35 @@ impl LsmStorageInner {
             sst_iters.push(Box::new(iter));
         }
 
-        // Wrap in MergeIterator and SSTIterator -> TwoMergeIterator -> LsmIterator -> FusedIterator
+        // Create L1 SST iterators
+        let l1_ssts: Vec<_> = if snapshot.levels.is_empty() {
+            Vec::new()
+        } else {
+            snapshot.levels[0]
+                .1
+                .iter()
+                .map(|id| snapshot.sstables[id].clone())
+                .collect()
+        };
+
+        let l1_concat_iter = match _lower {
+            Bound::Included(b) | Bound::Excluded(b) => {
+                SstConcatIterator::create_and_seek_to_key(l1_ssts, KeySlice::from_slice(b))?
+            }
+            Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_ssts)?,
+        };
+
         let mem_merge_iter = MergeIterator::create(mem_iters);
         let sst_merge_iter = MergeIterator::create(sst_iters);
-        let two_merge_iter = TwoMergeIterator::create(mem_merge_iter, sst_merge_iter)?;
+        let l0_two_merge_iter = TwoMergeIterator::create(mem_merge_iter, sst_merge_iter)?;
+        let two_merge_iter = TwoMergeIterator::create(l0_two_merge_iter, l1_concat_iter)?;
+
         let end_bound = match _upper {
             Bound::Included(b) => Bound::Included(Bytes::copy_from_slice(b)),
             Bound::Excluded(b) => Bound::Excluded(Bytes::copy_from_slice(b)),
             Bound::Unbounded => Bound::Unbounded,
         };
+
         let mut lsm_iter = LsmIterator::new(two_merge_iter, end_bound)?;
 
         // Skip the key if it matches the excluded lower bound exactly
