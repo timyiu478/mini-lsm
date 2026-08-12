@@ -27,10 +27,10 @@ pub use simple_leveled::{
 };
 pub use tiered::{TieredCompactionController, TieredCompactionOptions, TieredCompactionTask};
 
-use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
-use crate::table::{SsTable, SsTableIterator, SsTableBuilder};
-use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::StorageIterator;
+use crate::iterators::merge_iterator::MergeIterator;
+use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CompactionTask {
@@ -128,13 +128,13 @@ impl LsmStorageInner {
         match _task {
             CompactionTask::Tiered(_) => {
                 // TODO
-            },
+            }
             CompactionTask::Leveled(_) => {
                 // TODO
-            },
+            }
             CompactionTask::Simple(_) => {
                 // TODO
-            },
+            }
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
                 l1_sstables,
@@ -144,17 +144,9 @@ impl LsmStorageInner {
                     Arc::clone(&guard)
                 };
 
-                let mut ssts = Vec::with_capacity(l0_sstables.len()+l1_sstables.len());
-                ssts.extend(
-                    l0_sstables
-                    .iter()
-                    .map(|id| snapshot.sstables[id].clone()),
-                );
-                ssts.extend(
-                    l1_sstables
-                    .iter()
-                    .map(|id| snapshot.sstables[id].clone()),
-                );
+                let mut ssts = Vec::with_capacity(l0_sstables.len() + l1_sstables.len());
+                ssts.extend(l0_sstables.iter().map(|id| snapshot.sstables[id].clone()));
+                ssts.extend(l1_sstables.iter().map(|id| snapshot.sstables[id].clone()));
 
                 let mut sst_iters = Vec::with_capacity(ssts.len());
                 for sst in ssts {
@@ -164,7 +156,7 @@ impl LsmStorageInner {
                 let mut sst_merge_iter = MergeIterator::create(sst_iters);
                 let mut sst_builder = SsTableBuilder::new(self.options.block_size);
                 let mut has_key = false;
-                
+
                 // use MergeIterator to merge every SST captured by the task
                 // and then write the surviving entries through SsTableBuilder
                 while sst_merge_iter.is_valid() {
@@ -174,7 +166,11 @@ impl LsmStorageInner {
                         if sst_builder.estimated_size() >= self.options.target_sst_size {
                             let sst_id = self.next_sst_id();
                             let path_of_sst = self.path_of_sst(sst_id);
-                            let compact_sst = sst_builder.build(sst_id, Some(self.block_cache.clone()), path_of_sst)?;
+                            let compact_sst = sst_builder.build(
+                                sst_id,
+                                Some(self.block_cache.clone()),
+                                path_of_sst,
+                            )?;
                             compact_ssts.push(Arc::new(compact_sst));
 
                             sst_builder = SsTableBuilder::new(self.options.block_size);
@@ -187,7 +183,8 @@ impl LsmStorageInner {
                 if has_key {
                     let sst_id = self.next_sst_id();
                     let path_of_sst = self.path_of_sst(sst_id);
-                    let compact_sst = sst_builder.build(sst_id, Some(self.block_cache.clone()), path_of_sst)?;
+                    let compact_sst =
+                        sst_builder.build(sst_id, Some(self.block_cache.clone()), path_of_sst)?;
                     compact_ssts.push(Arc::new(compact_sst));
                 }
             }
@@ -201,11 +198,11 @@ impl LsmStorageInner {
             let guard = self.state.read();
             Arc::clone(&guard)
         };
-        
+
         let l0_sstables = snapshot.l0_sstables.clone();
         let l1_sstables = snapshot.levels[0].1.clone();
 
-        let full_compaction_task = CompactionTask::ForceFullCompaction{
+        let full_compaction_task = CompactionTask::ForceFullCompaction {
             l0_sstables: l0_sstables.clone(),
             l1_sstables: l1_sstables.clone(),
         };
