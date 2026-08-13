@@ -49,7 +49,41 @@ impl SimpleLeveledCompactionController {
         &self,
         _snapshot: &LsmStorageState,
     ) -> Option<SimpleLeveledCompactionTask> {
-        unimplemented!()
+        if _snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
+            return Some(SimpleLeveledCompactionTask {
+                upper_level: None,
+                upper_level_sst_ids: _snapshot.l0_sstables.clone(),
+                lower_level: 1,
+                lower_level_sst_ids: _snapshot.levels[0].1.clone(),
+                is_lower_level_bottom_level: self.options.max_levels == 1,
+            });
+        }
+
+        for i in 0..self.options.max_levels - 1 {
+            let upper_level = i + 1; // 1-based level number
+            let lower_level = i + 2;
+
+            let upper_ssts = &_snapshot.levels[i].1;
+            let lower_ssts = &_snapshot.levels[i + 1].1;
+
+            // Skip if upper level is empty
+            if upper_ssts.is_empty() {
+                continue;
+            }
+
+            // Cross-multiplication check: (lower / upper) * 100 < size_ratio_percent
+            if lower_ssts.len() * 100 < upper_ssts.len() * self.options.size_ratio_percent {
+                return Some(SimpleLeveledCompactionTask {
+                    upper_level: Some(upper_level),
+                    upper_level_sst_ids: upper_ssts.clone(),
+                    lower_level,
+                    lower_level_sst_ids: lower_ssts.clone(),
+                    is_lower_level_bottom_level: lower_level == self.options.max_levels,
+                });
+            }
+        }
+
+        None
     }
 
     /// Apply the compaction result.
@@ -65,6 +99,25 @@ impl SimpleLeveledCompactionController {
         _task: &SimpleLeveledCompactionTask,
         _output: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
-        unimplemented!()
+        let mut snapshot = _snapshot.clone();
+        let mut obsolete_ssts = Vec::new();
+
+        obsolete_ssts.extend(&_task.upper_level_sst_ids);
+        obsolete_ssts.extend(&_task.lower_level_sst_ids);
+
+        match _task.upper_level {
+            None => {
+                let remove_set: std::collections::HashSet<_> =
+                    _task.upper_level_sst_ids.iter().copied().collect();
+                snapshot.l0_sstables.retain(|id| !remove_set.contains(id));
+            }
+            Some(lvl) => {
+                snapshot.levels[lvl - 1].1.clear();
+            }
+        }
+
+        snapshot.levels[_task.lower_level - 1].1 = _output.to_vec();
+
+        (snapshot, obsolete_ssts)
     }
 }
