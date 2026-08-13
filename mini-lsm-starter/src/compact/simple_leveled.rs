@@ -55,7 +55,7 @@ impl SimpleLeveledCompactionController {
                 upper_level_sst_ids: _snapshot.l0_sstables.clone(),
                 lower_level: 1,
                 lower_level_sst_ids: _snapshot.levels[0].1.clone(),
-                is_lower_level_bottom_level: self.options.max_levels == 1
+                is_lower_level_bottom_level: self.options.max_levels == 1,
             });
         }
 
@@ -109,9 +109,7 @@ impl SimpleLeveledCompactionController {
             None => {
                 let remove_set: std::collections::HashSet<_> =
                     _task.upper_level_sst_ids.iter().copied().collect();
-                snapshot
-                    .l0_sstables
-                    .retain(|id| !remove_set.contains(id));
+                snapshot.l0_sstables.retain(|id| !remove_set.contains(id));
             }
             Some(lvl) => {
                 snapshot.levels[lvl - 1].1.clear();
