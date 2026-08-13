@@ -407,20 +407,24 @@ impl LsmStorageInner {
             return Ok(Some(Bytes::copy_from_slice(sst_merge_iter.value())));
         }
 
-        // 4. Check L1 SSTables
-        if !snapshot.levels.is_empty() {
-            let l1_ssts: Vec<_> = snapshot.levels[0]
-                .1
+        // 4. Check All SSTables
+        for i in 0..snapshot.levels.len() {
+            let level_sst_ids = &snapshot.levels[i].1;
+
+            if level_sst_ids.is_empty() {
+                continue;
+            }
+            let ssts: Vec<_> = level_sst_ids
                 .iter()
                 .map(|id| snapshot.sstables[id].clone())
                 .collect();
 
-            let l1_iter = SstConcatIterator::create_and_seek_to_key(l1_ssts, key_slice)?;
-            if l1_iter.is_valid() && l1_iter.key() == key_slice {
-                return Ok(if l1_iter.value().is_empty() {
+            let iter = SstConcatIterator::create_and_seek_to_key(ssts, key_slice)?;
+            if iter.is_valid() && iter.key() == key_slice {
+                return Ok(if iter.value().is_empty() {
                     None
                 } else {
-                    Some(Bytes::copy_from_slice(l1_iter.value()))
+                    Some(Bytes::copy_from_slice(iter.value()))
                 });
             }
         }
@@ -610,28 +614,35 @@ impl LsmStorageInner {
             sst_iters.push(Box::new(iter));
         }
 
-        // Create L1 SST iterators
-        let l1_ssts: Vec<_> = if snapshot.levels.is_empty() {
-            Vec::new()
-        } else {
-            snapshot.levels[0]
-                .1
+        // Create All low level SST iterators
+        let mut low_sst_concat_iters = Vec::with_capacity(snapshot.levels.len());
+        for i in 0..snapshot.levels.len() {
+            let level_sst_ids = &snapshot.levels[i].1;
+
+            if level_sst_ids.is_empty() {
+                continue;
+            }
+
+            let l_ssts: Vec<_> = level_sst_ids
                 .iter()
                 .map(|id| snapshot.sstables[id].clone())
-                .collect()
-        };
+                .collect();
 
-        let l1_concat_iter = match _lower {
-            Bound::Included(b) | Bound::Excluded(b) => {
-                SstConcatIterator::create_and_seek_to_key(l1_ssts, KeySlice::from_slice(b))?
-            }
-            Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l1_ssts)?,
-        };
+            let l_concat_iter = match _lower {
+                Bound::Included(b) | Bound::Excluded(b) => {
+                    SstConcatIterator::create_and_seek_to_key(l_ssts, KeySlice::from_slice(b))?
+                }
+                Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(l_ssts)?,
+            };
+
+            low_sst_concat_iters.push(Box::new(l_concat_iter));
+        }
 
         let mem_merge_iter = MergeIterator::create(mem_iters);
         let sst_merge_iter = MergeIterator::create(sst_iters);
         let l0_two_merge_iter = TwoMergeIterator::create(mem_merge_iter, sst_merge_iter)?;
-        let two_merge_iter = TwoMergeIterator::create(l0_two_merge_iter, l1_concat_iter)?;
+        let low_merge_iter = MergeIterator::create(low_sst_concat_iters);
+        let two_merge_iter = TwoMergeIterator::create(l0_two_merge_iter, low_merge_iter)?;
 
         let end_bound = match _upper {
             Bound::Included(b) => Bound::Included(Bytes::copy_from_slice(b)),
