@@ -275,7 +275,7 @@ impl LsmStorageInner {
             }
 
             *guard = Arc::new(snapshot);
- 
+
             self.sync_dir()?;
 
             let record = ManifestRecord::Compaction(full_compaction_task, sst_ids);
