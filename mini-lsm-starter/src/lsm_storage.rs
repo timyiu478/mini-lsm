@@ -13,11 +13,11 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use std::fs::File;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -25,6 +25,7 @@ use farmhash;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
+use crate::compact::CompactionTask;
 use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
@@ -36,11 +37,10 @@ use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
+use crate::manifest::ManifestRecord;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
-use crate::manifest::ManifestRecord;
-use crate::compact::CompactionTask;
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -325,13 +325,9 @@ impl LsmStorageInner {
                         for id in &ids {
                             max_sst_id = max_sst_id.max(*id);
                         }
-                        
-                        let (new_state, _) = compaction_controller.apply_compaction_result(
-                            &state,
-                            &task,
-                            &ids,
-                            true,
-                        );
+
+                        let (new_state, _) = compaction_controller
+                            .apply_compaction_result(&state, &task, &ids, true);
                         state = new_state;
                     }
                     ManifestRecord::NewMemtable(id) => {
@@ -347,17 +343,35 @@ impl LsmStorageInner {
                 live_ssts.extend(files.iter().copied());
             }
 
-            for id in live_ssts {
-                let path_of_sst = Self::path_of_sst_static(path, id);
+            for id in &live_ssts {
+                let path_of_sst = Self::path_of_sst_static(path, id.clone());
                 let file = FileObject::open(&path_of_sst)?;
-                let sst = SsTable::open(id, Some(block_cache.clone()), file)?;
-                state.sstables.insert(id, Arc::new(sst));
+                let sst = SsTable::open(id.clone(), Some(block_cache.clone()), file)?;
+                state.sstables.insert(id.clone(), Arc::new(sst));
+            }
+
+            // Delete orphaned SST files
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                let file_path = entry.path();
+
+                if file_path.extension().and_then(|s| s.to_str()) == Some("sst") {
+                    if let Some(file_name) = file_path.file_stem().and_then(|s| s.to_str()) {
+                        if let Ok(sst_id) = file_name.parse::<usize>() {
+                            if !live_ssts.contains(&sst_id) {
+                                std::fs::remove_file(&file_path)?;
+                            }
+                        }
+                    }
+                }
             }
 
             // Now that SSTs are loaded, sort each leveled run by the first key
             for (_level, files) in &mut state.levels {
                 files.sort_by(|a, b| {
-                    state.sstables[a].first_key().cmp(state.sstables[b].first_key())
+                    state.sstables[a]
+                        .first_key()
+                        .cmp(state.sstables[b].first_key())
                 });
             }
         }
