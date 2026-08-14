@@ -33,6 +33,7 @@ use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -266,17 +267,29 @@ impl LsmStorageInner {
                 snapshot.sstables.remove(id);
             }
 
+            let sst_ids = compact_ssts.iter().map(|s| s.sst_id()).collect();
+
             for sst in compact_ssts {
                 snapshot.levels[0].1.push(sst.sst_id());
                 snapshot.sstables.insert(sst.sst_id(), sst);
             }
 
             *guard = Arc::new(snapshot);
+ 
+            self.sync_dir()?;
+
+            let record = ManifestRecord::Compaction(full_compaction_task, sst_ids);
+
+            if let Some(manifest) = &self.manifest {
+                manifest.add_record(&_state_lock, record)?;
+            }
         }
 
         for id in l0_sstables.iter().chain(l1_sstables.iter()) {
             std::fs::remove_file(self.path_of_sst(*id))?;
         }
+
+        self.sync_dir()?;
 
         Ok(())
     }
@@ -315,6 +328,15 @@ impl LsmStorageInner {
             *guard = Arc::new(new_snapshot);
             obsolete_ssts
         };
+
+        self.sync_dir()?;
+
+        let record = ManifestRecord::Compaction(task, new_sst_ids);
+
+        if let Some(manifest) = &self.manifest {
+            manifest.add_record(&_state_lock, record)?;
+        }
+
         drop(_state_lock);
 
         for id in obsolete_ssts {
@@ -323,6 +345,8 @@ impl LsmStorageInner {
                 std::fs::remove_file(path)?;
             }
         }
+
+        self.sync_dir()?;
 
         Ok(())
     }

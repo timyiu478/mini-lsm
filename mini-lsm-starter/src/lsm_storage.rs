@@ -17,6 +17,7 @@ use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::fs::File;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -38,6 +39,7 @@ use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
 use crate::mvcc::LsmMvccInner;
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
+use crate::manifest::ManifestRecord;
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -315,6 +317,15 @@ impl LsmStorageInner {
             CompactionOptions::NoCompaction => CompactionController::NoCompaction,
         };
 
+        let manifest_path = Self::path_of_manifest_static(path);
+
+        let (manifest, _) = if manifest_path.exists() {
+            Manifest::recover(&manifest_path)?
+        } else {
+            let manifest = Manifest::create(&manifest_path)?;
+            (manifest, Vec::new())
+        };
+
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
@@ -322,7 +333,7 @@ impl LsmStorageInner {
             block_cache,
             next_sst_id: AtomicUsize::new(max_sst_id + 1),
             compaction_controller,
-            manifest: None,
+            manifest: Some(manifest),
             options: options.into(),
             mvcc: None,
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
@@ -479,6 +490,14 @@ impl LsmStorageInner {
         Ok(())
     }
 
+    pub(crate) fn path_of_manifest_static(path: impl AsRef<Path>) -> PathBuf {
+        path.as_ref().join("MANIFEST")
+    }
+
+    pub(crate) fn path_of_manifest(&self) -> PathBuf {
+        Self::path_of_manifest_static(&self.path)
+    }
+
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
         path.as_ref().join(format!("{:05}.sst", id))
     }
@@ -496,7 +515,8 @@ impl LsmStorageInner {
     }
 
     pub(super) fn sync_dir(&self) -> Result<()> {
-        unimplemented!()
+        File::open(&self.path)?.sync_all()?;
+        Ok(())
     }
 
     /// Force freeze the current memtable to an immutable memtable
@@ -551,6 +571,12 @@ impl LsmStorageInner {
             snapshot.l0_sstables.insert(0, sst_id);
             snapshot.sstables.insert(sst_id, Arc::new(sst));
             *guard = Arc::new(snapshot);
+        }
+
+        self.sync_dir()?;
+
+        if let Some(manifest) = &self.manifest {
+            manifest.add_record(&_state_lock, ManifestRecord::Flush(sst_id))?;
         }
 
         Ok(())
