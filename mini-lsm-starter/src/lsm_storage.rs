@@ -25,7 +25,6 @@ use farmhash;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
-use crate::compact::CompactionTask;
 use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
@@ -302,55 +301,58 @@ impl LsmStorageInner {
 
         let manifest_path = Self::path_of_manifest_static(path);
 
+        let mut max_sst_id = 0;
+
         let (manifest, records) = if manifest_path.exists() {
             Manifest::recover(&manifest_path)?
         } else {
+            if !path.exists() {
+                std::fs::create_dir_all(path)?;
+            }
             let manifest = Manifest::create(&manifest_path)?;
             (manifest, Vec::new())
         };
 
-        let mut max_sst_id = 0;
-
-        if !path.exists() {
-            std::fs::create_dir_all(path)?;
-        } else {
-            // Replay records to compute the final, live SST IDs without opening the files yet
-            for record in records {
-                match record {
-                    ManifestRecord::Flush(id) => {
+        // Replay records to compute the final, live SST IDs without opening the files yet
+        for record in records {
+            match record {
+                ManifestRecord::Flush(id) => {
+                    if compaction_controller.flush_to_l0() {
                         state.l0_sstables.insert(0, id);
-                        max_sst_id = max_sst_id.max(id);
+                    } else {
+                        state.levels.insert(0, (id, vec![id]));
                     }
-                    ManifestRecord::Compaction(task, ids) => {
-                        for id in &ids {
-                            max_sst_id = max_sst_id.max(*id);
-                        }
-
-                        let (new_state, _) = compaction_controller
-                            .apply_compaction_result(&state, &task, &ids, true);
-                        state = new_state;
-                    }
-                    ManifestRecord::NewMemtable(id) => {
-                        max_sst_id = max_sst_id.max(id);
-                    }
+                    max_sst_id = max_sst_id.max(id);
                 }
-            }
+                ManifestRecord::Compaction(task, ids) => {
+                    for id in &ids {
+                        max_sst_id = max_sst_id.max(*id);
+                    }
 
-            // Open ONLY the live files present in the final state
-            let mut live_ssts = Vec::new();
-            live_ssts.extend(state.l0_sstables.iter().copied());
-            for (_, files) in &state.levels {
-                live_ssts.extend(files.iter().copied());
+                    let (new_state, _) =
+                        compaction_controller.apply_compaction_result(&state, &task, &ids, true);
+                    state = new_state;
+                }
+                _ => {} // TODO
             }
+        }
 
-            for id in &live_ssts {
-                let path_of_sst = Self::path_of_sst_static(path, id.clone());
-                let file = FileObject::open(&path_of_sst)?;
-                let sst = SsTable::open(id.clone(), Some(block_cache.clone()), file)?;
-                state.sstables.insert(id.clone(), Arc::new(sst));
-            }
+        // Open ONLY the live files present in the final state
+        let mut live_ssts = Vec::new();
+        live_ssts.extend(state.l0_sstables.iter().copied());
+        for (_, files) in &state.levels {
+            live_ssts.extend(files.iter().copied());
+        }
 
-            // Delete orphaned SST files
+        for id in &live_ssts {
+            let path_of_sst = Self::path_of_sst_static(path, id.clone());
+            let file = FileObject::open(&path_of_sst)?;
+            let sst = SsTable::open(id.clone(), Some(block_cache.clone()), file)?;
+            state.sstables.insert(id.clone(), Arc::new(sst));
+        }
+
+        // Delete orphaned SST files
+        if path.exists() {
             for entry in std::fs::read_dir(path)? {
                 let entry = entry?;
                 let file_path = entry.path();
@@ -365,8 +367,10 @@ impl LsmStorageInner {
                     }
                 }
             }
+        }
 
-            // Now that SSTs are loaded, sort each leveled run by the first key
+        // Only sort each leveled run by the first key if using Leveled compaction
+        if let CompactionController::Leveled(_) = &compaction_controller {
             for (_level, files) in &mut state.levels {
                 files.sort_by(|a, b| {
                     state.sstables[a]
@@ -382,6 +386,11 @@ impl LsmStorageInner {
         } else {
             MemTable::create(next_sst_id)
         });
+
+        // Add the first memtable to the manifest for a newly initialized DB
+        if max_sst_id == 0 {
+            manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
+        }
 
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
@@ -436,43 +445,45 @@ impl LsmStorageInner {
         let key_slice = KeySlice::from_slice(_key);
 
         // 3. Check L0 SSTables
-        let mut ssts = Vec::with_capacity(snapshot.l0_sstables.len());
-        ssts.extend(
-            snapshot
-                .l0_sstables
-                .iter()
-                .map(|id| snapshot.sstables[id].clone()),
-        );
+        if self.compaction_controller.flush_to_l0() {
+            let mut ssts = Vec::with_capacity(snapshot.l0_sstables.len());
+            ssts.extend(
+                snapshot
+                    .l0_sstables
+                    .iter()
+                    .map(|id| snapshot.sstables[id].clone()),
+            );
 
-        let mut sst_iters = Vec::with_capacity(ssts.len());
-        for sst in ssts {
-            let key_hash = farmhash::fingerprint32(_key);
-            if let Some(bloom) = &sst.bloom
-                && !bloom.may_contain(key_hash)
-            {
-                continue;
+            let mut sst_iters = Vec::with_capacity(ssts.len());
+            for sst in ssts {
+                let key_hash = farmhash::fingerprint32(_key);
+                if let Some(bloom) = &sst.bloom
+                    && !bloom.may_contain(key_hash)
+                {
+                    continue;
+                }
+                if sst.first_key().as_key_slice() > key_slice
+                    || sst.last_key().as_key_slice() < key_slice
+                {
+                    continue;
+                }
+                sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(
+                    sst,
+                    KeySlice::from_slice(_key),
+                )?));
             }
-            if sst.first_key().as_key_slice() > key_slice
-                || sst.last_key().as_key_slice() < key_slice
-            {
-                continue;
+            let mut sst_merge_iter = MergeIterator::create(sst_iters);
+
+            while sst_merge_iter.is_valid() && sst_merge_iter.key() < KeySlice::from_slice(_key) {
+                sst_merge_iter.next()?;
             }
-            sst_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(
-                sst,
-                KeySlice::from_slice(_key),
-            )?));
-        }
-        let mut sst_merge_iter = MergeIterator::create(sst_iters);
 
-        while sst_merge_iter.is_valid() && sst_merge_iter.key() < KeySlice::from_slice(_key) {
-            sst_merge_iter.next()?;
-        }
-
-        if sst_merge_iter.is_valid()
-            && sst_merge_iter.key() == key_slice
-            && !sst_merge_iter.value().is_empty()
-        {
-            return Ok(Some(Bytes::copy_from_slice(sst_merge_iter.value())));
+            if sst_merge_iter.is_valid()
+                && sst_merge_iter.key() == key_slice
+                && !sst_merge_iter.value().is_empty()
+            {
+                return Ok(Some(Bytes::copy_from_slice(sst_merge_iter.value())));
+            }
         }
 
         // 4. Check All SSTables
@@ -634,7 +645,13 @@ impl LsmStorageInner {
             let mut snapshot = guard.as_ref().clone();
             let removed = snapshot.imm_memtables.pop().unwrap();
             assert_eq!(removed.id(), sst_id);
-            snapshot.l0_sstables.insert(0, sst_id);
+
+            if self.compaction_controller.flush_to_l0() {
+                snapshot.l0_sstables.insert(0, sst_id);
+            } else {
+                snapshot.levels.insert(0, (sst_id, vec![sst_id]));
+            }
+
             snapshot.sstables.insert(sst_id, Arc::new(sst));
             *guard = Arc::new(snapshot);
         }
@@ -677,33 +694,35 @@ impl LsmStorageInner {
 
         // Create L0 SST iterators
         let mut sst_iters = Vec::with_capacity(snapshot.l0_sstables.len());
-        for id in &snapshot.l0_sstables {
-            let sst = snapshot.sstables[id].clone();
+        if self.compaction_controller.flush_to_l0() {
+            for id in &snapshot.l0_sstables {
+                let sst = snapshot.sstables[id].clone();
 
-            // Check if SST range [first_key, last_key] overlaps with [_lower, _upper]
-            if match _lower {
-                Bound::Included(l) => sst.last_key().as_key_slice() < KeySlice::from_slice(l),
-                Bound::Excluded(l) => sst.last_key().as_key_slice() <= KeySlice::from_slice(l),
-                Bound::Unbounded => false,
-            } {
-                continue; // SST ends before range starts
-            }
-
-            if match _upper {
-                Bound::Included(u) => sst.first_key().as_key_slice() > KeySlice::from_slice(u),
-                Bound::Excluded(u) => sst.first_key().as_key_slice() >= KeySlice::from_slice(u),
-                Bound::Unbounded => false,
-            } {
-                continue; // SST starts after range ends
-            }
-
-            let iter = match _lower {
-                Bound::Included(l) | Bound::Excluded(l) => {
-                    SsTableIterator::create_and_seek_to_key(sst, KeySlice::from_slice(l))?
+                // Check if SST range [first_key, last_key] overlaps with [_lower, _upper]
+                if match _lower {
+                    Bound::Included(l) => sst.last_key().as_key_slice() < KeySlice::from_slice(l),
+                    Bound::Excluded(l) => sst.last_key().as_key_slice() <= KeySlice::from_slice(l),
+                    Bound::Unbounded => false,
+                } {
+                    continue; // SST ends before range starts
                 }
-                Bound::Unbounded => SsTableIterator::create_and_seek_to_first(sst)?,
-            };
-            sst_iters.push(Box::new(iter));
+
+                if match _upper {
+                    Bound::Included(u) => sst.first_key().as_key_slice() > KeySlice::from_slice(u),
+                    Bound::Excluded(u) => sst.first_key().as_key_slice() >= KeySlice::from_slice(u),
+                    Bound::Unbounded => false,
+                } {
+                    continue; // SST starts after range ends
+                }
+
+                let iter = match _lower {
+                    Bound::Included(l) | Bound::Excluded(l) => {
+                        SsTableIterator::create_and_seek_to_key(sst, KeySlice::from_slice(l))?
+                    }
+                    Bound::Unbounded => SsTableIterator::create_and_seek_to_first(sst)?,
+                };
+                sst_iters.push(Box::new(iter));
+            }
         }
 
         // Create All low level SST iterators

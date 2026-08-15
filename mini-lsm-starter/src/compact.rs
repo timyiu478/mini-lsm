@@ -180,9 +180,18 @@ impl LsmStorageInner {
         };
 
         match _task {
-            CompactionTask::Tiered(_) => {
-                // TODO
-                Ok(vec![])
+            CompactionTask::Tiered(tiered_task) => {
+                let mut sst_iters = Vec::with_capacity(tiered_task.tiers.len());
+
+                for (_, ids) in &tiered_task.tiers {
+                    let ssts: Vec<_> = ids.iter().map(|id| snapshot.sstables[id].clone()).collect();
+
+                    let iter = SstConcatIterator::create_and_seek_to_first(ssts)?;
+                    sst_iters.push(Box::new(iter));
+                }
+
+                let merge_iter = MergeIterator::create(sst_iters);
+                self.build_ssts_from_iter(merge_iter, tiered_task.bottom_tier_included)
             }
             CompactionTask::Leveled(_) => {
                 // TODO
@@ -233,7 +242,6 @@ impl LsmStorageInner {
 
                 self.build_ssts_from_iter(iter, true)
             }
-            _ => Ok(vec![]),
         }
     }
 
