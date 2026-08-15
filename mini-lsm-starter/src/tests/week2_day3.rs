@@ -119,3 +119,73 @@ fn test_tiered_compaction_rejects_l0_ssts() {
 
     controller.generate_compaction_task(&snapshot);
 }
+
+#[test]
+fn test_tiered_compaction_apply_result_middle_tiers() {
+    let options = TieredCompactionOptions {
+        num_tiers: 5,
+        max_size_amplification_percent: 200,
+        size_ratio: 1,
+        min_merge_width: 2,
+        max_merge_width: None,
+    };
+    let controller = TieredCompactionController::new(options.clone());
+    let dir = tempdir().unwrap();
+    let storage = MiniLsm::open(
+        &dir,
+        LsmStorageOptions::default_for_week2_test(CompactionOptions::Tiered(options)),
+    )
+    .unwrap();
+    let mut snapshot = storage.inner.state.read().as_ref().clone();
+
+    // Simulate 5 existing tiers, from newest (5) to oldest (1)
+    snapshot.levels = vec![
+        (5, vec![5]), 
+        (4, vec![4]), 
+        (3, vec![3]), 
+        (2, vec![2]), 
+        (1, vec![1])
+    ];
+
+    // Simulate a compaction task that merges middle tiers 4, 3, and 2.
+    let task = TieredCompactionTask {
+        tiers: vec![(4, vec![4]), (3, vec![3]), (2, vec![2])],
+        bottom_tier_included: false,
+    };
+
+    // Apply the result, assuming the compaction engine outputted a new tier with SST ID 6
+    let (new_state, mut removed) = controller.apply_compaction_result(&snapshot, &task, &[6]);
+
+    // Rigorous State Transition Checks:
+    // 1. The new tier (6) MUST replace the exact slice of compacted tiers.
+    // 2. The newer tier (5) MUST remain above.
+    // 3. The older tier (1) MUST remain below.
+    assert_eq!(
+        new_state.levels.len(), 
+        3, 
+        "State should have exactly 3 tiers left"
+    );
+    assert_eq!(
+        new_state.levels[0], 
+        (5, vec![5]), 
+        "Tier 5 should remain unaffected at the top"
+    );
+    assert_eq!(
+        new_state.levels[1], 
+        (6, vec![6]), 
+        "New tier 6 should be spliced exactly into the middle"
+    );
+    assert_eq!(
+        new_state.levels[2], 
+        (1, vec![1]), 
+        "Tier 1 should remain unaffected at the bottom"
+    );
+
+    // 4. Ensure the correct SSTs are returned for cleanup
+    removed.sort();
+    assert_eq!(
+        removed, 
+        vec![2, 3, 4], 
+        "SSTs 2, 3, and 4 should be returned for removal"
+    );
+}
