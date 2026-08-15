@@ -192,11 +192,11 @@ impl LsmStorageInner {
 
                 let merge_iter = MergeIterator::create(sst_iters);
                 self.build_ssts_from_iter(merge_iter, tiered_task.bottom_tier_included)
-            },
+            }
             CompactionTask::Leveled(_) => {
                 // TODO
                 Ok(vec![])
-            },
+            }
             CompactionTask::Simple(simple_task) => {
                 let upper_ssts: Vec<_> = simple_task
                     .upper_level_sst_ids
@@ -224,7 +224,7 @@ impl LsmStorageInner {
                     let iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
                     self.build_ssts_from_iter(iter, simple_task.is_lower_level_bottom_level)
                 }
-            },
+            }
             CompactionTask::ForceFullCompaction {
                 l0_sstables,
                 l1_sstables,
@@ -241,7 +241,7 @@ impl LsmStorageInner {
                 let iter = MergeIterator::create(sst_iters);
 
                 self.build_ssts_from_iter(iter, true)
-            },
+            }
         }
     }
 
