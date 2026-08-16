@@ -113,10 +113,7 @@ impl LeveledCompactionController {
         }
     }
 
-    fn compute_target_sizes(
-        &self,
-        snapshot: &LsmStorageState,
-    ) -> Vec<u64> {
+    fn compute_target_sizes(&self, snapshot: &LsmStorageState) -> Vec<u64> {
         let mut real_sizes = vec![0u64; self.options.max_levels + 1]; // 1-indexed
         for i in 1..=self.options.max_levels {
             real_sizes[i] = self.get_ssts_size(snapshot, i);
@@ -126,7 +123,8 @@ impl LeveledCompactionController {
         let mut target_sizes = vec![0u64; self.options.max_levels + 1];
 
         // Bottom level target
-        target_sizes[self.options.max_levels] = real_sizes[self.options.max_levels].max(base_level_size_bytes);
+        target_sizes[self.options.max_levels] =
+            real_sizes[self.options.max_levels].max(base_level_size_bytes);
 
         for i in (1..self.options.max_levels).rev() {
             let lower_target = target_sizes[i + 1];
@@ -141,17 +139,13 @@ impl LeveledCompactionController {
         target_sizes
     }
 
-    fn compute_current_sizes(
-        &self,
-        snapshot: &LsmStorageState,
-    ) -> Vec<u64> {
+    fn compute_current_sizes(&self, snapshot: &LsmStorageState) -> Vec<u64> {
         let mut current_sizes = vec![0u64; self.options.max_levels + 1];
         for i in 1..=self.options.max_levels {
             current_sizes[i] = self.get_ssts_size(snapshot, i);
         }
         current_sizes
     }
-
 
     pub fn generate_compaction_task(
         &self,
@@ -167,7 +161,8 @@ impl LeveledCompactionController {
 
             // Include ALL L0 SSTs, not just the minimum one
             let upper_sst_ids = _snapshot.l0_sstables.clone();
-            let lower_overlap_sst_ids = self.find_overlapping_ssts(_snapshot, &upper_sst_ids, l_base);
+            let lower_overlap_sst_ids =
+                self.find_overlapping_ssts(_snapshot, &upper_sst_ids, l_base);
 
             return Some(LeveledCompactionTask {
                 upper_level: None,
@@ -189,7 +184,7 @@ impl LeveledCompactionController {
 
             if target_size > 0 {
                 let priority = current_size as f64 / target_size as f64;
-                
+
                 if priority > max_priority {
                     max_priority = priority;
                     selected_level = Some(i);
@@ -212,7 +207,8 @@ impl LeveledCompactionController {
             // Select the oldest SSTable (smallest ID) as the candidate
             let chosen_sst = level_ssts.iter().copied().min().unwrap();
             let upper_sst_ids = vec![chosen_sst];
-            let lower_overlap_sst_ids = self.find_overlapping_ssts(_snapshot, &upper_sst_ids, level + 1);
+            let lower_overlap_sst_ids =
+                self.find_overlapping_ssts(_snapshot, &upper_sst_ids, level + 1);
 
             return Some(LeveledCompactionTask {
                 upper_level: Some(level),
@@ -247,7 +243,9 @@ impl LeveledCompactionController {
         // Remove SSTs from the upper level
         match _task.upper_level {
             None => {
-                snapshot.l0_sstables.retain(|id| !remove_upper_set.contains(id));
+                snapshot
+                    .l0_sstables
+                    .retain(|id| !remove_upper_set.contains(id));
             }
             Some(lvl) => {
                 if let Some((_, ssts)) = snapshot.levels.iter_mut().find(|(l, _)| *l == lvl) {
@@ -257,7 +255,11 @@ impl LeveledCompactionController {
         }
 
         // Remove old SSTs and append new output SSTs in lower level
-        if let Some((_, ssts)) = snapshot.levels.iter_mut().find(|(l, _)| *l == _task.lower_level) {
+        if let Some((_, ssts)) = snapshot
+            .levels
+            .iter_mut()
+            .find(|(l, _)| *l == _task.lower_level)
+        {
             ssts.retain(|id| !remove_lower_set.contains(id));
             ssts.extend(_output);
 
