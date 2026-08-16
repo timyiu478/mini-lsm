@@ -140,11 +140,11 @@ fn test_tiered_compaction_apply_result_middle_tiers() {
 
     // Simulate 5 existing tiers, from newest (5) to oldest (1)
     snapshot.levels = vec![
-        (5, vec![5]), 
-        (4, vec![4]), 
-        (3, vec![3]), 
-        (2, vec![2]), 
-        (1, vec![1])
+        (5, vec![5]),
+        (4, vec![4]),
+        (3, vec![3]),
+        (2, vec![2]),
+        (1, vec![1]),
     ];
 
     // Simulate a compaction task that merges middle tiers 4, 3, and 2.
@@ -161,31 +161,31 @@ fn test_tiered_compaction_apply_result_middle_tiers() {
     // 2. The newer tier (5) MUST remain above.
     // 3. The older tier (1) MUST remain below.
     assert_eq!(
-        new_state.levels.len(), 
-        3, 
+        new_state.levels.len(),
+        3,
         "State should have exactly 3 tiers left"
     );
     assert_eq!(
-        new_state.levels[0], 
-        (5, vec![5]), 
+        new_state.levels[0],
+        (5, vec![5]),
         "Tier 5 should remain unaffected at the top"
     );
     assert_eq!(
-        new_state.levels[1], 
-        (6, vec![6]), 
+        new_state.levels[1],
+        (6, vec![6]),
         "New tier 6 should be spliced exactly into the middle"
     );
     assert_eq!(
-        new_state.levels[2], 
-        (1, vec![1]), 
+        new_state.levels[2],
+        (1, vec![1]),
         "Tier 1 should remain unaffected at the bottom"
     );
 
     // 4. Ensure the correct SSTs are returned for cleanup
     removed.sort();
     assert_eq!(
-        removed, 
-        vec![2, 3, 4], 
+        removed,
+        vec![2, 3, 4],
         "SSTs 2, 3, and 4 should be returned for removal"
     );
 }
