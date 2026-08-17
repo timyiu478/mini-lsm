@@ -395,15 +395,17 @@ impl LsmStorageInner {
             }
         }
 
-        // Only sort each leveled run by the first key if using Leveled compaction
-        if let CompactionController::Leveled(_) = &compaction_controller {
-            for (_level, files) in &mut state.levels {
-                files.sort_by(|a, b| {
-                    state.sstables[a]
-                        .first_key()
-                        .cmp(state.sstables[b].first_key())
-                });
+        match &compaction_controller {
+            CompactionController::Leveled(_) | CompactionController::Simple(_) => {
+                for (_level, files) in &mut state.levels {
+                    files.sort_by(|a, b| {
+                        state.sstables[a]
+                            .first_key()
+                            .cmp(state.sstables[b].first_key())
+                    });
+                }
             }
+            _ => {}
         }
 
         let next_sst_id = max_sst_id + 1;
@@ -411,15 +413,13 @@ impl LsmStorageInner {
         // Add the first memtable to the manifest for a newly initialized DB
         if max_sst_id == 0 {
             state.memtable = Arc::new(if options.enable_wal {
-                MemTable::create_with_wal(
-                    state.memtable.id(),
-                    Self::path_of_wal_static(path, state.memtable.id()),
-                )?
+                MemTable::create_with_wal(state.memtable.id(), Self::path_of_wal_static(path, state.memtable.id()))?
             } else {
                 MemTable::create(state.memtable.id())
             });
             manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
         }
+
 
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
@@ -509,8 +509,10 @@ impl LsmStorageInner {
 
             if sst_merge_iter.is_valid()
                 && sst_merge_iter.key() == key_slice
-                && !sst_merge_iter.value().is_empty()
             {
+                if sst_merge_iter.value().is_empty() {
+                    return Ok(None)
+                }
                 return Ok(Some(Bytes::copy_from_slice(sst_merge_iter.value())));
             }
         }
@@ -627,10 +629,7 @@ impl LsmStorageInner {
         });
 
         if let Some(manifest) = &self.manifest {
-            manifest.add_record(
-                &_state_lock_observer,
-                ManifestRecord::NewMemtable(memtable_id),
-            )?;
+            manifest.add_record(&_state_lock_observer, ManifestRecord::NewMemtable(memtable_id))?;
         }
 
         {
