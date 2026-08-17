@@ -13,17 +13,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::key::KeySlice;
 use anyhow::Result;
+use anyhow::bail;
 use bytes::Bytes;
+use bytes::{Buf, BufMut, BytesMut};
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 use std::fs::File;
+use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::Arc;
-use bytes::{BufMut, Buf, BytesMut};
-use std::io::{BufWriter, Write, Read};
-use anyhow::{bail};
-use crate::key::KeySlice;
 
 pub struct Wal {
     file: Arc<Mutex<BufWriter<File>>>,
@@ -41,18 +41,27 @@ impl Wal {
         let mut file = File::options().read(true).append(true).open(_path)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
-        
+
         let mut ptr = buf.as_slice();
 
         while !ptr.is_empty() {
             if ptr.len() < 2 {
-                break; // Less than key_len header bytes left
+                break; // Incomplete key length header
             }
             let key_len = ptr.get_u16() as usize;
+            if ptr.len() < key_len {
+                break; // Incomplete key payload
+            }
             let key = Bytes::copy_from_slice(&ptr[..key_len]);
             ptr.advance(key_len);
 
+            if ptr.len() < 2 {
+                break; // Incomplete value length header
+            }
             let val_len = ptr.get_u16() as usize;
+            if ptr.len() < val_len {
+                break; // Incomplete value payload
+            }
             let val = Bytes::copy_from_slice(&ptr[..val_len]);
             ptr.advance(val_len);
 
