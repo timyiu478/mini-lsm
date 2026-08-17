@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use crc32fast::hash;
 use farmhash;
 
 use super::{BlockMeta, SsTable};
@@ -53,6 +54,9 @@ impl SsTableBuilder {
     fn split(&mut self) {
         let old_builder = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
         let block = old_builder.build();
+        let encoded_block = block.encode();
+
+        let checksum = hash(&encoded_block);
 
         let block_meta = BlockMeta {
             offset: self.data.len(),
@@ -66,7 +70,8 @@ impl SsTableBuilder {
 
         self.meta.push(block_meta);
 
-        self.data.extend_from_slice(&block.encode());
+        self.data.extend_from_slice(&encoded_block);
+        self.data.put_u32(checksum);
     }
 
     /// Adds a key-value pair to SSTable.

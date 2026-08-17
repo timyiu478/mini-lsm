@@ -227,7 +227,20 @@ impl SsTable {
 
         let data = self.file.read(meta.offset as u64, len)?;
 
-        Ok(Arc::new(Block::decode(&data)))
+        // Separate block content from the 4-byte checksum at the end
+        let (content, mut checksum_bytes) = data.split_at(data.len() - 4);
+        let expected_checksum = checksum_bytes.get_u32();
+        let actual_checksum = crc32fast::hash(content);
+
+        if actual_checksum != expected_checksum {
+            anyhow::bail!(
+                "block checksum mismatch: expected {:#x}, got {:#x}",
+                expected_checksum,
+                actual_checksum
+            );
+        }
+
+        Ok(Arc::new(Block::decode(&content)))
     }
 
     /// Read a block from disk, with block cache. (Day 4)

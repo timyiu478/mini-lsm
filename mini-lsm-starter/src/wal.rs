@@ -45,6 +45,9 @@ impl Wal {
         let mut ptr = buf.as_slice();
 
         while !ptr.is_empty() {
+            // Keep a reference to the beginning of the current record
+            let record_start = ptr;
+
             if ptr.len() < 2 {
                 break; // Incomplete key length header
             }
@@ -65,6 +68,20 @@ impl Wal {
             let val = Bytes::copy_from_slice(&ptr[..val_len]);
             ptr.advance(val_len);
 
+            // Check for checksum
+            if ptr.len() < 4 {
+                break; // Incomplete checksum payload
+            }
+            let expected_checksum = ptr.get_u32();
+
+            // Calculate the actual length of the record (excluding the 4 checksum bytes)
+            let record_len = 2 + key_len + 2 + val_len;
+            let actual_checksum = crc32fast::hash(&record_start[..record_len]);
+
+            if actual_checksum != expected_checksum {
+                break; // File is corrupted from this point onward due to a crash
+            }
+
             _skiplist.insert(key, val);
         }
 
@@ -77,13 +94,19 @@ impl Wal {
         if _key.len() > u16::MAX as usize || _value.len() > u16::MAX as usize {
             bail!("Key or value size exceeds u16::MAX");
         }
-        let total_size = _key.len() + _value.len() + 4;
+
+        // Size: 2 (key_len) + key + 2 (val_len) + val + 4 (checksum)
+        let total_size = _key.len() + _value.len() + 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
         buf.put_u16(_key.len() as u16);
         buf.put_slice(_key);
         buf.put_u16(_value.len() as u16);
         buf.put_slice(_value);
+
+        // Compute checksum over the payload and append it
+        let checksum = crc32fast::hash(&buf);
+        buf.put_u32(checksum);
 
         let mut writer = self.file.lock();
 
