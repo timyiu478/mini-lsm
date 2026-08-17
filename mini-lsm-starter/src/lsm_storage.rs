@@ -182,7 +182,7 @@ impl Drop for MiniLsm {
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
         if self.inner.options.enable_wal {
-            return Ok(());
+            return self.sync();
         }
 
         self.inner
@@ -313,10 +313,14 @@ impl LsmStorageInner {
             (manifest, Vec::new())
         };
 
+        let mut memtable_ids = Vec::new();
+
         // Replay records to compute the final, live SST IDs without opening the files yet
         for record in records {
             match record {
                 ManifestRecord::Flush(id) => {
+                    memtable_ids.retain(|&x| x != id);
+
                     if compaction_controller.flush_to_l0() {
                         state.l0_sstables.insert(0, id);
                     } else {
@@ -333,7 +337,29 @@ impl LsmStorageInner {
                         compaction_controller.apply_compaction_result(&state, &task, &ids, true);
                     state = new_state;
                 }
-                _ => {} // TODO
+                ManifestRecord::NewMemtable(id) => {
+                    max_sst_id = max_sst_id.max(id);
+                    memtable_ids.insert(0, id);
+                }
+            }
+        }
+
+        // Recover the memtables that are actually still alive
+        if !memtable_ids.is_empty() {
+            let active_id = memtable_ids[0];
+            state.memtable = Arc::new(if options.enable_wal {
+                MemTable::recover_from_wal(active_id, Self::path_of_wal_static(path, active_id))?
+            } else {
+                MemTable::create(active_id)
+            });
+
+            state.imm_memtables.clear();
+            for &id in memtable_ids.iter().skip(1) {
+                state.imm_memtables.push(Arc::new(if options.enable_wal {
+                    MemTable::recover_from_wal(id, Self::path_of_wal_static(path, id))?
+                } else {
+                    MemTable::create(id)
+                }));
             }
         }
 
@@ -369,28 +395,31 @@ impl LsmStorageInner {
             }
         }
 
-        // Only sort each leveled run by the first key if using Leveled compaction
-        if let CompactionController::Leveled(_) = &compaction_controller {
-            for (_level, files) in &mut state.levels {
-                files.sort_by(|a, b| {
-                    state.sstables[a]
-                        .first_key()
-                        .cmp(state.sstables[b].first_key())
-                });
+        match &compaction_controller {
+            CompactionController::Leveled(_) | CompactionController::Simple(_) => {
+                for (_level, files) in &mut state.levels {
+                    files.sort_by(|a, b| {
+                        state.sstables[a]
+                            .first_key()
+                            .cmp(state.sstables[b].first_key())
+                    });
+                }
             }
+            _ => {}
         }
 
         let next_sst_id = max_sst_id + 1;
-        state.memtable = Arc::new(if options.enable_wal {
-            MemTable::create_with_wal(next_sst_id, Self::path_of_wal_static(path, next_sst_id))?
-        } else {
-            MemTable::create(next_sst_id)
-        });
 
         // Add the first memtable to the manifest for a newly initialized DB
         if max_sst_id == 0 {
+            state.memtable = Arc::new(if options.enable_wal {
+                MemTable::create_with_wal(state.memtable.id(), Self::path_of_wal_static(path, state.memtable.id()))?
+            } else {
+                MemTable::create(state.memtable.id())
+            });
             manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
         }
+
 
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
@@ -409,7 +438,7 @@ impl LsmStorageInner {
     }
 
     pub fn sync(&self) -> Result<()> {
-        unimplemented!()
+        self.state.read().memtable.sync_wal()
     }
 
     pub fn add_compaction_filter(&self, compaction_filter: CompactionFilter) {
@@ -480,8 +509,10 @@ impl LsmStorageInner {
 
             if sst_merge_iter.is_valid()
                 && sst_merge_iter.key() == key_slice
-                && !sst_merge_iter.value().is_empty()
             {
+                if sst_merge_iter.value().is_empty() {
+                    return Ok(None)
+                }
                 return Ok(Some(Bytes::copy_from_slice(sst_merge_iter.value())));
             }
         }
@@ -597,6 +628,10 @@ impl LsmStorageInner {
             MemTable::create(memtable_id)
         });
 
+        if let Some(manifest) = &self.manifest {
+            manifest.add_record(&_state_lock_observer, ManifestRecord::NewMemtable(memtable_id))?;
+        }
+
         {
             let mut guard = self.state.write();
 
@@ -660,6 +695,10 @@ impl LsmStorageInner {
 
         if let Some(manifest) = &self.manifest {
             manifest.add_record(&_state_lock, ManifestRecord::Flush(sst_id))?;
+        }
+
+        if self.options.enable_wal {
+            std::fs::remove_file(self.path_of_wal(sst_id)).ok();
         }
 
         Ok(())

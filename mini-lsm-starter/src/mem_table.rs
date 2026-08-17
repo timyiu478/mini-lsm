@@ -121,6 +121,10 @@ impl MemTable {
         let key_bytes = Bytes::copy_from_slice(_key);
         let val_bytes = Bytes::copy_from_slice(_value);
 
+        if let Some(wal) = &self.wal {
+            wal.put(&key_bytes, &val_bytes)?;
+        }
+
         let added_size = _key.len() + _value.len();
         self.approximate_size
             .fetch_add(added_size, Ordering::Relaxed);
