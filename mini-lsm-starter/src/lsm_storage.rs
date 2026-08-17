@@ -413,13 +413,15 @@ impl LsmStorageInner {
         // Add the first memtable to the manifest for a newly initialized DB
         if max_sst_id == 0 {
             state.memtable = Arc::new(if options.enable_wal {
-                MemTable::create_with_wal(state.memtable.id(), Self::path_of_wal_static(path, state.memtable.id()))?
+                MemTable::create_with_wal(
+                    state.memtable.id(),
+                    Self::path_of_wal_static(path, state.memtable.id()),
+                )?
             } else {
                 MemTable::create(state.memtable.id())
             });
             manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
         }
-
 
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
@@ -507,11 +509,9 @@ impl LsmStorageInner {
                 sst_merge_iter.next()?;
             }
 
-            if sst_merge_iter.is_valid()
-                && sst_merge_iter.key() == key_slice
-            {
+            if sst_merge_iter.is_valid() && sst_merge_iter.key() == key_slice {
                 if sst_merge_iter.value().is_empty() {
-                    return Ok(None)
+                    return Ok(None);
                 }
                 return Ok(Some(Bytes::copy_from_slice(sst_merge_iter.value())));
             }
@@ -544,49 +544,47 @@ impl LsmStorageInner {
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
     pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
-        unimplemented!()
+        for record in _batch {
+            let state = self.state.read();
+
+            match record {
+                WriteBatchRecord::Del(k) => {
+                    state.memtable.put(k.as_ref(), b"")?;
+                }
+                WriteBatchRecord::Put(k, v) => {
+                    state.memtable.put(k.as_ref(), v.as_ref())?;
+                }
+            }
+
+            if state.memtable.approximate_size() >= self.options.target_sst_size {
+                // Drop read lock before calling force_freeze_memtable
+                // because freeze needs a WRITE lock on self.state
+                drop(state);
+                let state_lock = self.state_lock.lock();
+                let state = self.state.read();
+
+                if state.memtable.approximate_size() >= self.options.target_sst_size {
+                    drop(state);
+                    let _ = self.force_freeze_memtable(&state_lock);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        let state = self.state.read();
+        let batch = vec![WriteBatchRecord::Put(_key, _value)];
 
-        state.memtable.put(_key, _value)?;
-
-        if state.memtable.approximate_size() >= self.options.target_sst_size {
-            // Drop read lock before calling force_freeze_memtable
-            // because freeze needs a WRITE lock on self.state
-            drop(state);
-            let state_lock = self.state_lock.lock();
-            let state = self.state.read();
-            if state.memtable.approximate_size() >= self.options.target_sst_size {
-                drop(state);
-                let _ = self.force_freeze_memtable(&state_lock);
-            }
-        }
-
-        Ok(())
+        self.write_batch(&batch)
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        let state = self.state.read();
+        let batch = vec![WriteBatchRecord::Del(_key)];
 
-        state.memtable.put(_key, b"")?;
-
-        if state.memtable.approximate_size() >= self.options.target_sst_size {
-            // Drop read lock before calling force_freeze_memtable
-            // because freeze needs a WRITE lock on self.state
-            drop(state);
-            let state_lock = self.state_lock.lock();
-            let state = self.state.read();
-            if state.memtable.approximate_size() >= self.options.target_sst_size {
-                drop(state);
-                let _ = self.force_freeze_memtable(&state_lock);
-            }
-        }
-
-        Ok(())
+        self.write_batch(&batch)
     }
 
     pub(crate) fn path_of_manifest_static(path: impl AsRef<Path>) -> PathBuf {
@@ -629,7 +627,10 @@ impl LsmStorageInner {
         });
 
         if let Some(manifest) = &self.manifest {
-            manifest.add_record(&_state_lock_observer, ManifestRecord::NewMemtable(memtable_id))?;
+            manifest.add_record(
+                &_state_lock_observer,
+                ManifestRecord::NewMemtable(memtable_id),
+            )?;
         }
 
         {

@@ -22,6 +22,7 @@ serde = { version = "1", features = ["derive"] }
 farmhash = "1"
 nom = "8"
 rustyline = "18"
+crc32fast = "1.5.0"
 
 [dev-dependencies]
 tempfile = "3"
