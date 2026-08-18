@@ -135,7 +135,7 @@ impl BlockIterator {
         self.key.set_from_slice(KeySlice::from_slice(&reconstructed_key, ts));
 
         // Parse Value Length & Value Range
-        let val_len_offset = offset + 4 + rest_len;
+        let val_len_offset = offset + 4 + rest_len + 8;
         let val_len = u16::from_be_bytes(
             self.block.data[val_len_offset..(val_len_offset + 2)]
                 .try_into()
