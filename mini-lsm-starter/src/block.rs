@@ -80,23 +80,20 @@ impl Block {
         if let Some(&last_offset) = offsets.last() {
             let last_offset = last_offset as usize;
 
-            // 1. Ensure at least 6 bytes exist for overlap_len (2B) + rest_key_len (2B) + val_len (2B) headers
             assert!(
-                last_offset + 6 <= offsets_start,
+                last_offset + 14 <= offsets_start,
                 "last entry header exceeds data section"
             );
 
-            // 2. Read overlap_len and rest_key_len
-            // overlap_len is at [last_offset..last_offset + 2], but we just need rest_key_len to skip the key
             let rest_key_len = (&raw_data[last_offset + 2..last_offset + 4]).get_u16() as usize;
 
-            let val_len_offset = last_offset + 4 + rest_key_len;
+            let val_len_offset = last_offset + 4 + rest_key_len + 8;
+
             assert!(
                 val_len_offset + 2 <= offsets_start,
                 "key extends past data section"
             );
 
-            // 3. Read val_len and verify total entry end boundary
             let val_len = (&raw_data[val_len_offset..val_len_offset + 2]).get_u16() as usize;
             let entry_end = val_len_offset + 2 + val_len;
             assert!(

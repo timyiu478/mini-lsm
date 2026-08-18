@@ -21,14 +21,14 @@ use farmhash;
 
 use super::{BlockMeta, SsTable};
 use crate::table::{Bloom, FileObject};
-use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
+use crate::{block::BlockBuilder, key::KeySlice, key::KeyVec, lsm_storage::BlockCache};
 use bytes::BufMut;
 
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: Vec<u8>,
-    last_key: Vec<u8>,
+    first_key: KeyVec,
+    last_key: KeyVec,
     data: Vec<u8>,
     key_hashes: Vec<u32>,
     pub(crate) meta: Vec<BlockMeta>,
@@ -40,8 +40,8 @@ impl SsTableBuilder {
     pub fn new(block_size: usize) -> Self {
         SsTableBuilder {
             builder: BlockBuilder::new(block_size),
-            first_key: Vec::new(),
-            last_key: Vec::new(),
+            first_key: KeyVec::new(),
+            last_key: KeyVec::new(),
             data: Vec::new(),
             key_hashes: Vec::new(),
             meta: Vec::new(),
@@ -60,12 +60,8 @@ impl SsTableBuilder {
 
         let block_meta = BlockMeta {
             offset: self.data.len(),
-            first_key: KeySlice::from_slice(&self.first_key)
-                .to_key_vec()
-                .into_key_bytes(),
-            last_key: KeySlice::from_slice(&self.last_key)
-                .to_key_vec()
-                .into_key_bytes(),
+            first_key: self.first_key.clone().into_key_bytes(),
+            last_key: self.last_key.clone().into_key_bytes(),
         };
 
         self.meta.push(block_meta);
@@ -80,18 +76,19 @@ impl SsTableBuilder {
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
         if self.first_key.is_empty() {
-            self.first_key = key.to_key_vec().into_inner();
+            self.first_key.set_from_slice(key);
         }
 
         if !self.builder.add(key, value) {
             self.split();
             let _ = self.builder.add(key, value);
-            self.first_key = key.to_key_vec().into_inner();
+            self.first_key.set_from_slice(key);
         }
 
-        self.last_key = key.to_key_vec().into_inner();
+        self.last_key.set_from_slice(key);
 
-        self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
+        // Hash ONLY the user key for the Bloom filter
+        self.key_hashes.push(farmhash::fingerprint32(key.key_ref()));
     }
 
     /// Get the estimated size of the SSTable.
@@ -140,9 +137,7 @@ impl SsTableBuilder {
             bloom_filter_offset,
             block_cache,
             first_key: first_key,
-            last_key: KeySlice::from_slice(&self.last_key)
-                .to_key_vec()
-                .into_key_bytes(),
+            last_key: self.last_key.clone().into_key_bytes(),
             bloom: Some(bloom),
             max_ts: 0,
         })
