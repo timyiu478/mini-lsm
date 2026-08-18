@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use std::ops::Bound;
 
 use crate::{
@@ -61,17 +61,17 @@ impl StorageIterator for LsmIterator {
 
         match &self.end_bound {
             Bound::Included(b) => {
-                inner_is_valid && self.inner.key() <= KeyBytes::from_bytes(b.clone()).as_key_slice()
+                inner_is_valid && self.inner.key().key_ref() <= b.as_ref()
             }
             Bound::Excluded(b) => {
-                inner_is_valid && self.inner.key() < KeyBytes::from_bytes(b.clone()).as_key_slice()
+                inner_is_valid && self.inner.key().key_ref() < b.as_ref()
             }
             Bound::Unbounded => inner_is_valid,
         }
     }
 
     fn key(&self) -> &[u8] {
-        self.inner.key().raw_ref()
+        self.inner.key().key_ref()
     }
 
     fn value(&self) -> &[u8] {
