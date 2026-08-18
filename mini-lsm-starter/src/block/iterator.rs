@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::sync::Arc;
+use bytes::Buf;
 
 use crate::key::{KeySlice, KeyVec};
 
@@ -59,7 +60,8 @@ impl BlockIterator {
                     .unwrap(),
             ) as usize;
             let first_key_bytes = &iter.block.data[(offset + 4)..(offset + 4 + rest_len)];
-            iter.first_key = KeySlice::from_slice(first_key_bytes).to_key_vec();
+            let ts = (&iter.block.data[(offset + 4 + rest_len)..(offset + 4 + rest_len + 8)]).get_u64();
+            iter.first_key.set_from_slice(KeySlice::from_slice(first_key_bytes, ts));
         }
 
         iter
@@ -123,10 +125,14 @@ impl BlockIterator {
 
         let rest_key = &self.block.data[(offset + 4)..(offset + 4 + rest_len)];
 
-        // Reconstruct Key
-        let mut reconstructed_key = self.first_key.raw_ref()[..overlap_len].to_vec();
+        // Reconstruct the full key to perform the comparison
+        let mut reconstructed_key = self.first_key.key_ref()[..overlap_len].to_vec();
         reconstructed_key.extend_from_slice(rest_key);
-        self.key = KeySlice::from_slice(&reconstructed_key).to_key_vec();
+
+        // Extract the timestamp of the key
+        let ts = (&self.block.data[(offset + 4 + rest_len)..(offset + 4 + rest_len + 8)]).get_u64();
+
+        self.key.set_from_slice(KeySlice::from_slice(&reconstructed_key, ts));
 
         // Parse Value Length & Value Range
         let val_len_offset = offset + 4 + rest_len;
@@ -179,9 +185,13 @@ impl BlockIterator {
             let rest_key = &self.block.data[(offset + 4)..(offset + 4 + rest_len)];
 
             // Reconstruct the full key to perform the comparison
-            let mut reconstructed_key = self.first_key.raw_ref()[..overlap_len].to_vec();
+            let mut reconstructed_key = self.first_key.key_ref()[..overlap_len].to_vec();
             reconstructed_key.extend_from_slice(rest_key);
-            let key_slice = KeySlice::from_slice(&reconstructed_key);
+
+            // Extract the timestamp of the key
+            let ts = (&self.block.data[(offset + 4 + rest_len)..(offset + 4 + rest_len + 8)]).get_u64();
+
+            let key_slice = KeySlice::from_slice(&reconstructed_key, ts);
 
             if key_slice < key {
                 left = mid + 1;

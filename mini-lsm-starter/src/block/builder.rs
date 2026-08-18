@@ -53,19 +53,19 @@ impl BlockBuilder {
         // Calculate the overlap with the first key
         let mut overlap_len = 0;
         if !self.is_empty() {
-            let first_key_bytes = self.first_key.raw_ref();
-            let key_bytes = key.raw_ref();
+            let first_key_bytes = self.first_key.key_ref();
+            let key_bytes = key.key_ref();
             let min_len = first_key_bytes.len().min(key_bytes.len());
             while overlap_len < min_len && first_key_bytes[overlap_len] == key_bytes[overlap_len] {
                 overlap_len += 1;
             }
         }
 
-        let rest_key_len = key.raw_ref().len() - overlap_len;
+        let rest_key_len = key.key_len() - overlap_len;
 
         // Calculate size required for the new entry:
-        // 2 bytes (overlap_len) + 2 bytes (rest_key_len) + rest_key_len + 2 bytes (val_len) + val_len + 2 bytes (offset)
-        let entry_size = 2 + 2 + rest_key_len + 2 + value.len() + 2;
+        // 2 bytes (overlap_len) + 2 bytes (rest_key_len) + rest_key_len + 8 bytes (timestamp) + 2 bytes (val_len) + val_len + 2 bytes (offset)
+        let entry_size = 2 + 2 + rest_key_len + 8 + 2 + value.len() + 2;
 
         if !self.is_empty() && self.estimated_size() + entry_size > self.block_size {
             return false;
@@ -79,10 +79,11 @@ impl BlockBuilder {
         // Record the current data offset before appending the new entry
         self.offsets.push(self.data.len() as u16);
 
-        // Encode overlap_len (u16), rest_key_len (u16), rest_key bytes, value length (u16), and value bytes
+        // Encode overlap_len (u16), rest_key_len (u16), rest_key bytes, timestamp, value length (u16), and value bytes
         self.data.put_u16(overlap_len as u16);
         self.data.put_u16(rest_key_len as u16);
-        self.data.extend_from_slice(&key.raw_ref()[overlap_len..]);
+        self.data.extend_from_slice(&key.key_ref()[overlap_len..]);
+        self.data.put_u64(key.ts());
         self.data.put_u16(value.len() as u16);
         self.data.extend_from_slice(value);
 
