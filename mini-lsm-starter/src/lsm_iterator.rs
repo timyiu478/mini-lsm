@@ -61,14 +61,10 @@ impl StorageIterator for LsmIterator {
 
         match &self.end_bound {
             Bound::Included(b) => {
-                let key = b.slice(0..b.len()-8);
-                let ts = b.slice(b.len()-8..).get_u64();
-                inner_is_valid && self.inner.key() <= KeyBytes::from_bytes_with_ts(key, ts).as_key_slice()
+                inner_is_valid && self.inner.key().key_ref() <= b.as_ref()
             }
             Bound::Excluded(b) => {
-                let key = b.slice(0..b.len()-8);
-                let ts = b.slice(b.len()-8..).get_u64();
-                inner_is_valid && self.inner.key() < KeyBytes::from_bytes_with_ts(key, ts).as_key_slice()
+                inner_is_valid && self.inner.key().key_ref() < b.as_ref()
             }
             Bound::Unbounded => inner_is_valid,
         }
