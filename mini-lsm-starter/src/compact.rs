@@ -31,7 +31,7 @@ use crate::iterators::StorageIterator;
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{KeySlice, Key};
+use crate::key::{Key, KeySlice};
 use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
 use crate::manifest::ManifestRecord;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
@@ -53,10 +53,10 @@ impl CompactionTask {
     fn compact_to_bottom_level(&self) -> bool {
         false
         // match self {
-            // CompactionTask::ForceFullCompaction { .. } => true,
-            // CompactionTask::Leveled(task) => task.is_lower_level_bottom_level,
-            // CompactionTask::Simple(task) => task.is_lower_level_bottom_level,
-            // CompactionTask::Tiered(task) => task.bottom_tier_included,
+        // CompactionTask::ForceFullCompaction { .. } => true,
+        // CompactionTask::Leveled(task) => task.is_lower_level_bottom_level,
+        // CompactionTask::Simple(task) => task.is_lower_level_bottom_level,
+        // CompactionTask::Tiered(task) => task.bottom_tier_included,
         // }
     }
 }

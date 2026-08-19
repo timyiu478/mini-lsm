@@ -39,7 +39,11 @@ pub struct LsmIterator {
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>, read_ts: u64) -> Result<Self> {
+    pub(crate) fn new(
+        iter: LsmIteratorInner,
+        end_bound: Bound<Bytes>,
+        read_ts: u64,
+    ) -> Result<Self> {
         let mut iter = Self {
             inner: iter,
             end_bound,
@@ -69,7 +73,8 @@ impl LsmIterator {
 
             // 3. Lock onto new visible user key
             self.prev_user_key.clear();
-            self.prev_user_key.extend_from_slice(self.inner.key().key_ref());
+            self.prev_user_key
+                .extend_from_slice(self.inner.key().key_ref());
 
             // Yield if valid put; if tombstone, loop restarts and Step 1 drains it
             if !self.inner.value().is_empty() {
@@ -87,12 +92,8 @@ impl StorageIterator for LsmIterator {
         let inner_is_valid = self.inner.is_valid();
 
         match &self.end_bound {
-            Bound::Included(b) => {
-                inner_is_valid && self.inner.key().key_ref() <= b.as_ref()
-            }
-            Bound::Excluded(b) => {
-                inner_is_valid && self.inner.key().key_ref() < b.as_ref()
-            }
+            Bound::Included(b) => inner_is_valid && self.inner.key().key_ref() <= b.as_ref(),
+            Bound::Excluded(b) => inner_is_valid && self.inner.key().key_ref() < b.as_ref(),
             Bound::Unbounded => inner_is_valid,
         }
     }

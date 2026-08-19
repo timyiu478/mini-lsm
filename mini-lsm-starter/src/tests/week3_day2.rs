@@ -71,29 +71,44 @@ fn test_scan_bounds_multi_version() {
     let options = LsmStorageOptions::default_for_week2_test(CompactionOptions::NoCompaction);
     let storage = MiniLsm::open(&dir, options).unwrap();
 
-    storage.write_batch(&[
-        WriteBatchRecord::Put(b"a", b"1"),
-        WriteBatchRecord::Put(b"b", b"1"),
-        WriteBatchRecord::Put(b"c", b"1"),
-    ]).unwrap();
-    storage.write_batch(&[WriteBatchRecord::Put(b"b", b"2")]).unwrap();
-    storage.write_batch(&[WriteBatchRecord::Put(b"b", b"3")]).unwrap();
+    storage
+        .write_batch(&[
+            WriteBatchRecord::Put(b"a", b"1"),
+            WriteBatchRecord::Put(b"b", b"1"),
+            WriteBatchRecord::Put(b"c", b"1"),
+        ])
+        .unwrap();
+    storage
+        .write_batch(&[WriteBatchRecord::Put(b"b", b"2")])
+        .unwrap();
+    storage
+        .write_batch(&[WriteBatchRecord::Put(b"b", b"3")])
+        .unwrap();
 
     // Included("b") to Included("c") -> returns ["b" (3), "c" (1)]
     check_lsm_iter_result_by_key(
-        &mut storage.scan(Bound::Included(b"b"), Bound::Included(b"c")).unwrap(),
-        vec![(Bytes::from("b"), Bytes::from("3")), (Bytes::from("c"), Bytes::from("1"))],
+        &mut storage
+            .scan(Bound::Included(b"b"), Bound::Included(b"c"))
+            .unwrap(),
+        vec![
+            (Bytes::from("b"), Bytes::from("3")),
+            (Bytes::from("c"), Bytes::from("1")),
+        ],
     );
 
     // Excluded("b") to Unbounded -> MUST skip all versions of "b", returning ["c"]
     check_lsm_iter_result_by_key(
-        &mut storage.scan(Bound::Excluded(b"b"), Bound::Unbounded).unwrap(),
+        &mut storage
+            .scan(Bound::Excluded(b"b"), Bound::Unbounded)
+            .unwrap(),
         vec![(Bytes::from("c"), Bytes::from("1"))],
     );
 
     // Unbounded to Excluded("b") -> MUST stop before "b", returning ["a"]
     check_lsm_iter_result_by_key(
-        &mut storage.scan(Bound::Unbounded, Bound::Excluded(b"b")).unwrap(),
+        &mut storage
+            .scan(Bound::Unbounded, Bound::Excluded(b"b"))
+            .unwrap(),
         vec![(Bytes::from("a"), Bytes::from("1"))],
     );
 }
@@ -107,12 +122,19 @@ fn test_sst_boundary_preserves_user_key_history() {
 
     // Write enough versions of "heavy_key" to breach target SST size
     for i in 0..50 {
-        storage.write_batch(&[WriteBatchRecord::Put(
-            b"heavy_key".as_slice(),
-            format!("val_{}", i).as_bytes(),
-        )]).unwrap();
+        storage
+            .write_batch(&[WriteBatchRecord::Put(
+                b"heavy_key".as_slice(),
+                format!("val_{}", i).as_bytes(),
+            )])
+            .unwrap();
     }
-    storage.write_batch(&[WriteBatchRecord::Put(b"next_key".as_slice(), b"v0".as_slice())]).unwrap();
+    storage
+        .write_batch(&[WriteBatchRecord::Put(
+            b"next_key".as_slice(),
+            b"v0".as_slice(),
+        )])
+        .unwrap();
 
     let raw_iter = construct_merge_iterator_over_storage(&storage.inner.state.read());
     let ssts = storage.inner.build_ssts_from_iter(raw_iter, false).unwrap();
@@ -123,7 +145,8 @@ fn test_sst_boundary_preserves_user_key_history() {
         let next_first_user_key = window[1].first_key().key_ref();
 
         assert_ne!(
-            prev_last_user_key, next_first_user_key,
+            prev_last_user_key,
+            next_first_user_key,
             "History for key {:?} was split across SST boundaries",
             String::from_utf8_lossy(prev_last_user_key)
         );

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::key::{KeySlice, KeyBytes};
+use crate::key::{KeyBytes, KeySlice};
 use anyhow::Result;
 use anyhow::bail;
 use bytes::Bytes;

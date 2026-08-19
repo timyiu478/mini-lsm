@@ -23,7 +23,7 @@ use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;
-use crate::key::{KeyBytes, KeySlice, TS_RANGE_BEGIN, TS_RANGE_END, TS_DEFAULT};
+use crate::key::{KeyBytes, KeySlice, TS_DEFAULT, TS_RANGE_BEGIN, TS_RANGE_END};
 use crate::table::SsTableBuilder;
 use crate::wal::Wal;
 
@@ -75,9 +75,7 @@ pub(crate) fn map_key_bound_plus_ts<'a>(
             Bound::Unbounded => Bound::Unbounded,
         },
         match upper {
-            Bound::Included(x) => {
-                Bound::Included(KeySlice::from_slice(x, TS_RANGE_END))
-            }
+            Bound::Included(x) => Bound::Included(KeySlice::from_slice(x, TS_RANGE_END)),
             Bound::Excluded(x) => Bound::Excluded(KeySlice::from_slice(x, TS_RANGE_BEGIN)),
             Bound::Unbounded => Bound::Unbounded,
         },
@@ -150,7 +148,7 @@ impl MemTable {
     /// Get a value by key.
     pub fn get(&self, _key: KeySlice) -> Option<Bytes> {
         let raw_key = _key.key_ref();
-        
+
         // SAFETY: The static slice is created strictly for a synchronous lookup inside `get`.
         // The `Bytes` object constructed from it never escapes this function body.
         let static_key = unsafe { std::slice::from_raw_parts(raw_key.as_ptr(), raw_key.len()) };
@@ -200,7 +198,7 @@ impl MemTable {
 
         let mut iter = MemTableIteratorBuilder {
             map: self.map.clone(),
-            iter_builder: |map| { map.range((lower, upper)) },
+            iter_builder: |map| map.range((lower, upper)),
             item: (KeyBytes::new(), Bytes::new()),
             valid: false,
         }
@@ -238,8 +236,13 @@ impl MemTable {
     }
 }
 
-type SkipMapRangeIter<'a> =
-    crossbeam_skiplist::map::Range<'a, KeyBytes, (Bound<KeyBytes>, Bound<KeyBytes>), KeyBytes, Bytes>;
+type SkipMapRangeIter<'a> = crossbeam_skiplist::map::Range<
+    'a,
+    KeyBytes,
+    (Bound<KeyBytes>, Bound<KeyBytes>),
+    KeyBytes,
+    Bytes,
+>;
 
 /// An iterator over a range of `SkipMap`. This is a self-referential structure and please refer to week 1, day 2
 /// chapter for more information.
