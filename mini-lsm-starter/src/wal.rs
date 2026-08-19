@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::key::KeySlice;
+use crate::key::{KeySlice, KeyBytes};
 use anyhow::Result;
 use anyhow::bail;
 use bytes::Bytes;
@@ -87,7 +87,10 @@ impl Wal {
                 break; // File is corrupted from this point onward due to a crash
             }
 
-            _skiplist.insert(KeySlice::from_slice(&key_bytes, ts), val);
+            let key_slice = KeySlice::from_slice(&key_bytes, ts);
+            let key_bytes = key_slice.to_key_vec().into_key_bytes();
+
+            _skiplist.insert(key_bytes, val);
         }
 
         Ok(Wal {
