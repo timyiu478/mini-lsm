@@ -34,20 +34,47 @@ type LsmIteratorInner = TwoMergeIterator<L0WithMemtableIterator, MergeIterator<S
 pub struct LsmIterator {
     inner: LsmIteratorInner,
     end_bound: Bound<Bytes>,
+    read_ts: u64,
+    prev_user_key: Vec<u8>,
 }
 
 impl LsmIterator {
-    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>, read_ts: u64) -> Result<Self> {
         let mut iter = Self {
             inner: iter,
             end_bound,
+            read_ts,
+            prev_user_key: Vec::new(),
         };
-        iter.move_to_non_delete()?;
+        iter.move_to_next()?;
         Ok(iter)
     }
-    fn move_to_non_delete(&mut self) -> Result<()> {
-        while self.inner.is_valid() && self.inner.value().is_empty() {
-            self.inner.next()?;
+    fn move_to_next(&mut self) -> Result<()> {
+        loop {
+            // 1. Drain older versions of previous/tombstoned key
+            while self.inner.is_valid() && self.inner.key().key_ref() == self.prev_user_key {
+                self.inner.next()?;
+            }
+            if !self.inner.is_valid() {
+                break;
+            }
+
+            // 2. Skip versions newer than read_ts
+            while self.inner.is_valid() && self.inner.key().ts() > self.read_ts {
+                self.inner.next()?;
+            }
+            if !self.inner.is_valid() {
+                break;
+            }
+
+            // 3. Lock onto new visible user key
+            self.prev_user_key.clear();
+            self.prev_user_key.extend_from_slice(self.inner.key().key_ref());
+
+            // Yield if valid put; if tombstone, loop restarts and Step 1 drains it
+            if !self.inner.value().is_empty() {
+                break;
+            }
         }
         Ok(())
     }
@@ -80,7 +107,7 @@ impl StorageIterator for LsmIterator {
 
     fn next(&mut self) -> Result<()> {
         self.inner.next()?;
-        self.move_to_non_delete()
+        self.move_to_next()
     }
 
     fn num_active_iterators(&self) -> usize {

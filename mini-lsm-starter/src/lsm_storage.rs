@@ -808,7 +808,7 @@ impl LsmStorageInner {
 
         let end_bound = map_bound(upper);
 
-        let mut lsm_iter = LsmIterator::new(two_merge_iter, end_bound)?;
+        let mut lsm_iter = LsmIterator::new(two_merge_iter, end_bound, read_ts)?;
 
         // Skip the key if it matches the excluded lower bound exactly
         if let Bound::Excluded(b) = lower {
