@@ -33,7 +33,7 @@ use crate::iterators::StorageIterator;
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{KeySlice, TS_RANGE_BEGIN};
+use crate::key::{KeySlice, TS_RANGE_BEGIN, TS_DEFAULT};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::manifest::ManifestRecord;
@@ -423,6 +423,9 @@ impl LsmStorageInner {
             manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
         }
 
+        // TODO: fix timestamp
+        let mvcc = LsmMvccInner::new(TS_DEFAULT);
+
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
             state_lock: Mutex::new(()),
@@ -432,7 +435,7 @@ impl LsmStorageInner {
             compaction_controller,
             manifest: Some(manifest),
             options: options.into(),
-            mvcc: None,
+            mvcc: Some(mvcc),
             compaction_filters: Arc::new(Mutex::new(Vec::new())),
         };
 
@@ -522,15 +525,23 @@ impl LsmStorageInner {
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
     pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
+        // Acquire MVCC write lock to make write_batch atomic
+        let _lock = self.mvcc().write_lock.lock();
+
+        // Allocate timestamp
+        let commit_ts = self.mvcc().latest_commit_ts() + 1;
+
         for record in _batch {
             let state = self.state.read();
 
             match record {
                 WriteBatchRecord::Del(k) => {
-                    state.memtable.put(k, b"")?;
+                    let key = KeySlice::from_slice(k.as_ref(), commit_ts);
+                    state.memtable.put(key, b"")?;
                 }
                 WriteBatchRecord::Put(k, v) => {
-                    state.memtable.put(k, v.as_ref())?;
+                    let key = KeySlice::from_slice(k.as_ref(), commit_ts);
+                    state.memtable.put(key, v.as_ref())?;
                 }
             }
 
@@ -547,6 +558,9 @@ impl LsmStorageInner {
                 }
             }
         }
+
+        // Publication
+        self.mvcc().update_commit_ts(commit_ts);
 
         Ok(())
     }
