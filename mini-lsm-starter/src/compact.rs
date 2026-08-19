@@ -130,7 +130,7 @@ pub enum CompactionOptions {
 
 impl LsmStorageInner {
     /// a generic helper for building new compacted SST(s)
-    fn build_ssts_from_iter<I>(
+    pub(crate) fn build_ssts_from_iter<I>(
         &self,
         mut iter: I,
         drop_tombstones: bool,
