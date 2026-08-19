@@ -51,7 +51,7 @@ impl CompactionTask {
     // TODO: fix this
     // for now, we keep ALL versions of a key during the compaction.
     fn compact_to_bottom_level(&self) -> bool {
-        false 
+        false
         // match self {
             // CompactionTask::ForceFullCompaction { .. } => true,
             // CompactionTask::Leveled(task) => task.is_lower_level_bottom_level,
@@ -140,22 +140,18 @@ impl LsmStorageInner {
     {
         let mut compact_ssts = Vec::new();
         let mut sst_builder = SsTableBuilder::new(self.options.block_size);
-        let mut has_key = false;
-        let mut prev_user_key = Vec::<u8>::new();
+        let mut prev_user_key = Vec::new();
 
         while iter.is_valid() {
             if drop_tombstones && iter.value().is_empty() {
-                prev_user_key.clear();
-                prev_user_key.extend_from_slice(iter.key().key_ref());
                 iter.next()?;
                 continue;
             }
-            has_key = true;
-            sst_builder.add(iter.key(), iter.value());
 
-            // Cut a new SST ONLY when transitioning to a NEW user key
-            // AND the builder has met/exceeded the target size threshold.
-            if prev_user_key != iter.key().key_ref() && sst_builder.estimated_size() >= self.options.target_sst_size {
+            // Cut the SST ONLY when we cross to a NEW user key AND target size is reached
+            if sst_builder.estimated_size() >= self.options.target_sst_size
+                && iter.key().key_ref() != prev_user_key.as_slice()
+            {
                 let sst_id = self.next_sst_id();
                 let compact_sst = sst_builder.build(
                     sst_id,
@@ -164,16 +160,20 @@ impl LsmStorageInner {
                 )?;
                 compact_ssts.push(Arc::new(compact_sst));
                 sst_builder = SsTableBuilder::new(self.options.block_size);
-                has_key = false;
             }
 
+            // Add key to current builder
+            sst_builder.add(iter.key(), iter.value());
+
+            // Track the current user key for the next iteration
             prev_user_key.clear();
             prev_user_key.extend_from_slice(iter.key().key_ref());
 
             iter.next()?;
         }
 
-        if has_key {
+        // Flush any remaining keys in the last builder
+        if !prev_user_key.is_empty() {
             let sst_id = self.next_sst_id();
             let compact_sst = sst_builder.build(
                 sst_id,
@@ -279,7 +279,7 @@ impl LsmStorageInner {
 
                 let iter = MergeIterator::create(sst_iters);
 
-                self.build_ssts_from_iter(iter, true)
+                self.build_ssts_from_iter(iter, compact_to_bottom_level)
             }
         }
     }
