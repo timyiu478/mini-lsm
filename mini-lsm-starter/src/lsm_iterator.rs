@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use anyhow::Result;
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use std::ops::Bound;
 
 use crate::{
@@ -21,7 +21,6 @@ use crate::{
         StorageIterator, concat_iterator::SstConcatIterator, merge_iterator::MergeIterator,
         two_merge_iterator::TwoMergeIterator,
     },
-    key::KeyBytes,
     mem_table::MemTableIterator,
     table::SsTableIterator,
 };

@@ -55,11 +55,7 @@ impl<
             self.is_a = false;
         } else if !self.b.is_valid() {
             self.is_a = true;
-        } else if self.b.key() < self.a.key() {
-            self.is_a = false;
-        } else {
-            self.is_a = true;
-        }
+        } else { self.is_a = self.b.key() >= self.a.key(); }
 
         Ok(())
     }

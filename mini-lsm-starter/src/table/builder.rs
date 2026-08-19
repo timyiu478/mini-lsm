@@ -136,7 +136,7 @@ impl SsTableBuilder {
             block_meta_offset,
             bloom_filter_offset,
             block_cache,
-            first_key: first_key,
+            first_key,
             last_key: self.last_key.clone().into_key_bytes(),
             bloom: Some(bloom),
             max_ts: 0,

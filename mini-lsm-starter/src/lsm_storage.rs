@@ -371,10 +371,10 @@ impl LsmStorageInner {
         }
 
         for id in &live_ssts {
-            let path_of_sst = Self::path_of_sst_static(path, id.clone());
+            let path_of_sst = Self::path_of_sst_static(path, *id);
             let file = FileObject::open(&path_of_sst)?;
-            let sst = SsTable::open(id.clone(), Some(block_cache.clone()), file)?;
-            state.sstables.insert(id.clone(), Arc::new(sst));
+            let sst = SsTable::open(*id, Some(block_cache.clone()), file)?;
+            state.sstables.insert(*id, Arc::new(sst));
         }
 
         // Delete orphaned SST files
@@ -383,15 +383,12 @@ impl LsmStorageInner {
                 let entry = entry?;
                 let file_path = entry.path();
 
-                if file_path.extension().and_then(|s| s.to_str()) == Some("sst") {
-                    if let Some(file_name) = file_path.file_stem().and_then(|s| s.to_str()) {
-                        if let Ok(sst_id) = file_name.parse::<usize>() {
-                            if !live_ssts.contains(&sst_id) {
+                if file_path.extension().and_then(|s| s.to_str()) == Some("sst")
+                    && let Some(file_name) = file_path.file_stem().and_then(|s| s.to_str())
+                        && let Ok(sst_id) = file_name.parse::<usize>()
+                            && !live_ssts.contains(&sst_id) {
                                 std::fs::remove_file(&file_path)?;
                             }
-                        }
-                    }
-                }
             }
         }
 
@@ -503,11 +500,10 @@ impl LsmStorageInner {
                 if sst.first_key().key_ref() > key || sst.last_key().key_ref() < key {
                     continue;
                 }
-                if let Some(bloom) = &sst.bloom {
-                    if !bloom.may_contain(key_hash) {
+                if let Some(bloom) = &sst.bloom
+                    && !bloom.may_contain(key_hash) {
                         continue;
                     }
-                }
                 let iter = SsTableIterator::create_and_seek_to_key(sst, key_slice)?;
                 if let Some(res) = check_iter(iter, key)? {
                     return Ok(res);
@@ -633,7 +629,7 @@ impl LsmStorageInner {
 
         if let Some(manifest) = &self.manifest {
             manifest.add_record(
-                &_state_lock_observer,
+                _state_lock_observer,
                 ManifestRecord::NewMemtable(memtable_id),
             )?;
         }
