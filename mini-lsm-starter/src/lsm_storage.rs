@@ -484,21 +484,24 @@ impl LsmStorageInner {
             }
         }
 
-        // 3. Check L0 SSTables (newest to oldest)
         let key_hash = farmhash::fingerprint32(key);
-        for id in &snapshot.l0_sstables {
-            let sst = snapshot.sstables[id].clone();
-            if sst.first_key().key_ref() > key || sst.last_key().key_ref() < key {
-                continue;
-            }
-            if let Some(bloom) = &sst.bloom {
-                if !bloom.may_contain(key_hash) {
+
+        // 3. Check L0 SSTables (newest to oldest)
+        if self.compaction_controller.flush_to_l0() {
+            for id in &snapshot.l0_sstables {
+                let sst = snapshot.sstables[id].clone();
+                if sst.first_key().key_ref() > key || sst.last_key().key_ref() < key {
                     continue;
                 }
-            }
-            let iter = SsTableIterator::create_and_seek_to_key(sst, key_slice)?;
-            if let Some(res) = check_iter(iter, key)? {
-                return Ok(res);
+                if let Some(bloom) = &sst.bloom {
+                    if !bloom.may_contain(key_hash) {
+                        continue;
+                    }
+                }
+                let iter = SsTableIterator::create_and_seek_to_key(sst, key_slice)?;
+                if let Some(res) = check_iter(iter, key)? {
+                    return Ok(res);
+                }
             }
         }
 
