@@ -385,10 +385,11 @@ impl LsmStorageInner {
 
                 if file_path.extension().and_then(|s| s.to_str()) == Some("sst")
                     && let Some(file_name) = file_path.file_stem().and_then(|s| s.to_str())
-                        && let Ok(sst_id) = file_name.parse::<usize>()
-                            && !live_ssts.contains(&sst_id) {
-                                std::fs::remove_file(&file_path)?;
-                            }
+                    && let Ok(sst_id) = file_name.parse::<usize>()
+                    && !live_ssts.contains(&sst_id)
+                {
+                    std::fs::remove_file(&file_path)?;
+                }
             }
         }
 
@@ -501,9 +502,10 @@ impl LsmStorageInner {
                     continue;
                 }
                 if let Some(bloom) = &sst.bloom
-                    && !bloom.may_contain(key_hash) {
-                        continue;
-                    }
+                    && !bloom.may_contain(key_hash)
+                {
+                    continue;
+                }
                 let iter = SsTableIterator::create_and_seek_to_key(sst, key_slice)?;
                 if let Some(res) = check_iter(iter, key)? {
                     return Ok(res);
