@@ -33,12 +33,13 @@ use crate::iterators::StorageIterator;
 use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::key::{KeySlice, TS_DEFAULT, TS_RANGE_BEGIN};
+use crate::key::{KeySlice, TS_DEFAULT};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::manifest::ManifestRecord;
 use crate::mem_table::{MemTable, map_bound, map_key_bound_plus_ts};
 use crate::mvcc::LsmMvccInner;
+use crate::mvcc::txn::{Transaction, TxnIterator};
 use crate::table::{FileObject, SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
@@ -216,7 +217,7 @@ impl MiniLsm {
         }))
     }
 
-    pub fn new_txn(&self) -> Result<()> {
+    pub fn new_txn(self: &Arc<Self>) -> Result<Arc<Transaction>> {
         self.inner.new_txn()
     }
 
@@ -244,11 +245,7 @@ impl MiniLsm {
         self.inner.sync()
     }
 
-    pub fn scan(
-        &self,
-        lower: Bound<&[u8]>,
-        upper: Bound<&[u8]>,
-    ) -> Result<FusedIterator<LsmIterator>> {
+    pub fn scan(self: &Arc<Self>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<TxnIterator> {
         self.inner.scan(lower, upper)
     }
 
@@ -344,11 +341,29 @@ impl LsmStorageInner {
             }
         }
 
+        let mut max_ts = TS_DEFAULT;
+
+        // Helper to extract maximum timestamp from a recovered MemTable
+        let scan_memtable_max_ts = |memtable: &MemTable| -> u64 {
+            let mut local_max = TS_DEFAULT;
+            let mut iter = memtable.scan(std::ops::Bound::Unbounded, std::ops::Bound::Unbounded);
+            while iter.is_valid() {
+                local_max = local_max.max(iter.key().ts());
+                let _ = iter.next();
+            }
+            local_max
+        };
+
         // Recover the memtables that are actually still alive
         if !memtable_ids.is_empty() {
             let active_id = memtable_ids[0];
             state.memtable = Arc::new(if options.enable_wal {
-                MemTable::recover_from_wal(active_id, Self::path_of_wal_static(path, active_id))?
+                let mem = MemTable::recover_from_wal(
+                    active_id,
+                    Self::path_of_wal_static(path, active_id),
+                )?;
+                max_ts = max_ts.max(scan_memtable_max_ts(&mem));
+                mem
             } else {
                 MemTable::create(active_id)
             });
@@ -356,7 +371,9 @@ impl LsmStorageInner {
             state.imm_memtables.clear();
             for &id in memtable_ids.iter().skip(1) {
                 state.imm_memtables.push(Arc::new(if options.enable_wal {
-                    MemTable::recover_from_wal(id, Self::path_of_wal_static(path, id))?
+                    let mem = MemTable::recover_from_wal(id, Self::path_of_wal_static(path, id))?;
+                    max_ts = max_ts.max(scan_memtable_max_ts(&mem));
+                    mem
                 } else {
                     MemTable::create(id)
                 }));
@@ -374,6 +391,7 @@ impl LsmStorageInner {
             let path_of_sst = Self::path_of_sst_static(path, *id);
             let file = FileObject::open(&path_of_sst)?;
             let sst = SsTable::open(*id, Some(block_cache.clone()), file)?;
+            max_ts = max_ts.max(sst.max_ts());
             state.sstables.insert(*id, Arc::new(sst));
         }
 
@@ -385,10 +403,11 @@ impl LsmStorageInner {
 
                 if file_path.extension().and_then(|s| s.to_str()) == Some("sst")
                     && let Some(file_name) = file_path.file_stem().and_then(|s| s.to_str())
-                        && let Ok(sst_id) = file_name.parse::<usize>()
-                            && !live_ssts.contains(&sst_id) {
-                                std::fs::remove_file(&file_path)?;
-                            }
+                    && let Ok(sst_id) = file_name.parse::<usize>()
+                    && !live_ssts.contains(&sst_id)
+                {
+                    std::fs::remove_file(&file_path)?;
+                }
             }
         }
 
@@ -420,8 +439,7 @@ impl LsmStorageInner {
             manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
         }
 
-        // TODO: fix timestamp
-        let mvcc = LsmMvccInner::new(TS_DEFAULT);
+        let mvcc = LsmMvccInner::new(max_ts);
 
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
@@ -449,9 +467,9 @@ impl LsmStorageInner {
     }
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
-    pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
-        let read_ts = TS_RANGE_BEGIN;
-        self.get_with_ts(_key, read_ts)
+    pub fn get(self: &Arc<Self>, _key: &[u8]) -> Result<Option<Bytes>> {
+        let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+        txn.get(_key)
     }
 
     pub fn get_with_ts(&self, key: &[u8], read_ts: u64) -> Result<Option<Bytes>> {
@@ -501,9 +519,10 @@ impl LsmStorageInner {
                     continue;
                 }
                 if let Some(bloom) = &sst.bloom
-                    && !bloom.may_contain(key_hash) {
-                        continue;
-                    }
+                    && !bloom.may_contain(key_hash)
+                {
+                    continue;
+                }
                 let iter = SsTableIterator::create_and_seek_to_key(sst, key_slice)?;
                 if let Some(res) = check_iter(iter, key)? {
                     return Ok(res);
@@ -706,19 +725,18 @@ impl LsmStorageInner {
         Ok(())
     }
 
-    pub fn new_txn(&self) -> Result<()> {
-        // no-op
-        Ok(())
+    pub fn new_txn(self: &Arc<Self>) -> Result<Arc<Transaction>> {
+        Ok(self.mvcc().new_txn(self.clone(), self.options.serializable))
     }
 
     /// Create an iterator over a range of keys.
     pub fn scan(
-        &self,
+        self: &Arc<Self>,
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
-    ) -> Result<FusedIterator<LsmIterator>> {
-        let read_ts = TS_RANGE_BEGIN;
-        self.scan_with_ts(_lower, _upper, read_ts)
+    ) -> Result<TxnIterator> {
+        let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+        txn.scan(_lower, _upper)
     }
 
     pub(crate) fn scan_with_ts(

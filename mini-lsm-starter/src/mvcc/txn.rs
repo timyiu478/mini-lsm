@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::{
     collections::HashSet,
     ops::Bound,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use anyhow::Result;
@@ -31,6 +31,7 @@ use crate::{
     iterators::{StorageIterator, two_merge_iterator::TwoMergeIterator},
     lsm_iterator::{FusedIterator, LsmIterator},
     lsm_storage::LsmStorageInner,
+    mem_table::map_bound,
 };
 
 pub struct Transaction {
@@ -44,11 +45,46 @@ pub struct Transaction {
 
 impl Transaction {
     pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        unimplemented!()
+        if self.committed.load(Ordering::SeqCst) {
+            panic!("Cannot operate on committed txn");
+        }
+        if let Some(guard) = &self.key_hashes {
+            let mut guard = guard.lock();
+            let (_, read_set) = &mut *guard;
+            read_set.insert(farmhash::hash32(key));
+        }
+        if let Some(entry) = self.local_storage.get(key) {
+            if entry.value().is_empty() {
+                return Ok(None);
+            } else {
+                return Ok(Some(entry.value().clone()));
+            }
+        }
+        self.inner.get_with_ts(key, self.read_ts)
     }
 
     pub fn scan(self: &Arc<Self>, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<TxnIterator> {
-        unimplemented!()
+        if self.committed.load(Ordering::SeqCst) {
+            panic!("Cannot operate on committed txn");
+        }
+
+        let lower_bytes = map_bound(lower);
+        let upper_bytes = map_bound(upper);
+
+        // TODO: fix this
+        let local_iter = TxnLocalIteratorBuilder {
+            map: self.local_storage.clone(),
+            iter_builder: |map| map.range((lower_bytes, upper_bytes)),
+            item: (Bytes::new(), Bytes::new()),
+            valid: false,
+        }
+        .build();
+
+        let fused_iter = self.inner.scan_with_ts(lower, upper, self.read_ts)?;
+
+        let two_merge_iterator = TwoMergeIterator::create(local_iter, fused_iter)?;
+
+        TxnIterator::create(self.clone(), two_merge_iterator)
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) {
@@ -81,25 +117,39 @@ pub struct TxnLocalIterator {
     iter: SkipMapRangeIter<'this>,
     /// Stores the current key-value pair.
     item: (Bytes, Bytes),
+    valid: bool,
 }
 
 impl StorageIterator for TxnLocalIterator {
     type KeyType<'a> = &'a [u8];
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.borrow_item().1.as_ref()
     }
 
     fn key(&self) -> &[u8] {
-        unimplemented!()
+        self.borrow_item().0.as_ref()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.with_valid(|valid| *valid)
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let entry = self.with_iter_mut(|iter| {
+            iter.next()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+        });
+
+        if let Some((key, value)) = entry {
+            self.with_item_mut(|item| *item = (key, value));
+            self.with_valid_mut(|valid| *valid = true);
+        } else {
+            self.with_item_mut(|item| *item = (Bytes::new(), Bytes::new()));
+            self.with_valid_mut(|valid| *valid = false);
+        }
+
+        Ok(())
     }
 }
 
@@ -113,7 +163,7 @@ impl TxnIterator {
         txn: Arc<Transaction>,
         iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
     ) -> Result<Self> {
-        unimplemented!()
+        Ok(TxnIterator { _txn: txn, iter })
     }
 }
 
@@ -136,7 +186,8 @@ impl StorageIterator for TxnIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        self.iter.next()?;
+        Ok(())
     }
 
     fn num_active_iterators(&self) -> usize {
