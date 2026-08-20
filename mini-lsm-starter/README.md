@@ -9,3 +9,4 @@ Implementation Tips:
 Limitations:
 
 * It does not provide full serializability for scan-heavy workloads.
+* Assume the metadata for every SST fits in memory.
