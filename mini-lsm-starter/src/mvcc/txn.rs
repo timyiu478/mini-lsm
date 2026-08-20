@@ -12,12 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::{
     collections::HashSet,
-    ops::{Bound},
+    ops::Bound,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -166,12 +163,7 @@ impl TxnIterator {
         txn: Arc<Transaction>,
         iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
     ) -> Result<Self> {
-        Ok(
-            TxnIterator{
-                _txn: txn,
-                iter,
-            }
-        )
+        Ok(TxnIterator { _txn: txn, iter })
     }
 }
 
