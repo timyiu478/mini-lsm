@@ -21,7 +21,9 @@ use farmhash;
 
 use super::{BlockMeta, SsTable};
 use crate::table::{Bloom, FileObject};
-use crate::{block::BlockBuilder, key::KeySlice, key::KeyVec, key::TS_DEFAULT, lsm_storage::BlockCache};
+use crate::{
+    block::BlockBuilder, key::KeySlice, key::KeyVec, key::TS_DEFAULT, lsm_storage::BlockCache,
+};
 use bytes::BufMut;
 
 /// Builds an SSTable from key-value pairs.
