@@ -95,7 +95,7 @@ impl LeveledCompactionController {
                 .l0_sstables
                 .iter()
                 .filter_map(|id| snapshot.sstables.get(id))
-                .map(|sst| sst.table_size() as u64)
+                .map(|sst| sst.table_size())
                 .sum()
         } else {
             snapshot
@@ -106,7 +106,7 @@ impl LeveledCompactionController {
                     sst_ids
                         .iter()
                         .filter_map(|id| snapshot.sstables.get(id))
-                        .map(|sst| sst.table_size() as u64)
+                        .map(|sst| sst.table_size())
                         .sum()
                 })
                 .unwrap_or(0)

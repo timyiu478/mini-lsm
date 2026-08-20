@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
 use bytes::Buf;
+use std::sync::Arc;
 
 use crate::key::{KeySlice, KeyVec};
 
@@ -60,8 +60,10 @@ impl BlockIterator {
                     .unwrap(),
             ) as usize;
             let first_key_bytes = &iter.block.data[(offset + 4)..(offset + 4 + rest_len)];
-            let ts = (&iter.block.data[(offset + 4 + rest_len)..(offset + 4 + rest_len + 8)]).get_u64();
-            iter.first_key.set_from_slice(KeySlice::from_slice(first_key_bytes, ts));
+            let ts =
+                (&iter.block.data[(offset + 4 + rest_len)..(offset + 4 + rest_len + 8)]).get_u64();
+            iter.first_key
+                .set_from_slice(KeySlice::from_slice(first_key_bytes, ts));
         }
 
         iter
@@ -132,7 +134,8 @@ impl BlockIterator {
         // Extract the timestamp of the key
         let ts = (&self.block.data[(offset + 4 + rest_len)..(offset + 4 + rest_len + 8)]).get_u64();
 
-        self.key.set_from_slice(KeySlice::from_slice(&reconstructed_key, ts));
+        self.key
+            .set_from_slice(KeySlice::from_slice(&reconstructed_key, ts));
 
         // Parse Value Length & Value Range
         let val_len_offset = offset + 4 + rest_len + 8;
@@ -189,7 +192,8 @@ impl BlockIterator {
             reconstructed_key.extend_from_slice(rest_key);
 
             // Extract the timestamp of the key
-            let ts = (&self.block.data[(offset + 4 + rest_len)..(offset + 4 + rest_len + 8)]).get_u64();
+            let ts =
+                (&self.block.data[(offset + 4 + rest_len)..(offset + 4 + rest_len + 8)]).get_u64();
 
             let key_slice = KeySlice::from_slice(&reconstructed_key, ts);
 

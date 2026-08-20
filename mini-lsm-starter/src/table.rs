@@ -244,7 +244,7 @@ impl SsTable {
             );
         }
 
-        Ok(Arc::new(Block::decode(&content)))
+        Ok(Arc::new(Block::decode(content)))
     }
 
     /// Read a block from disk, with block cache. (Day 4)

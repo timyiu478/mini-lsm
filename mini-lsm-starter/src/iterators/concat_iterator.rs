@@ -94,7 +94,7 @@ impl StorageIterator for SstConcatIterator {
     }
 
     fn is_valid(&self) -> bool {
-        self.current.as_ref().map_or(false, |iter| iter.is_valid())
+        self.current.as_ref().is_some_and(|iter| iter.is_valid())
     }
 
     fn next(&mut self) -> Result<()> {

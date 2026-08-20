@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::key::KeySlice;
+use crate::key::{KeyBytes, KeySlice};
 use anyhow::Result;
 use anyhow::bail;
 use bytes::Bytes;
@@ -37,7 +37,7 @@ impl Wal {
         })
     }
 
-    pub fn recover(_path: impl AsRef<Path>, _skiplist: &SkipMap<Bytes, Bytes>) -> Result<Self> {
+    pub fn recover(_path: impl AsRef<Path>, _skiplist: &SkipMap<KeyBytes, Bytes>) -> Result<Self> {
         let mut file = File::options().read(true).append(true).open(_path)?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
@@ -55,8 +55,13 @@ impl Wal {
             if ptr.len() < key_len {
                 break; // Incomplete key payload
             }
-            let key = Bytes::copy_from_slice(&ptr[..key_len]);
+            let key_bytes = Bytes::copy_from_slice(&ptr[..key_len]);
             ptr.advance(key_len);
+
+            if ptr.len() < 8 {
+                break; // Incomplete timestamp header
+            }
+            let ts = ptr.get_u64();
 
             if ptr.len() < 2 {
                 break; // Incomplete value length header
@@ -75,14 +80,17 @@ impl Wal {
             let expected_checksum = ptr.get_u32();
 
             // Calculate the actual length of the record (excluding the 4 checksum bytes)
-            let record_len = 2 + key_len + 2 + val_len;
+            let record_len = 2 + key_len + 8 + 2 + val_len;
             let actual_checksum = crc32fast::hash(&record_start[..record_len]);
 
             if actual_checksum != expected_checksum {
                 break; // File is corrupted from this point onward due to a crash
             }
 
-            _skiplist.insert(key, val);
+            let key_slice = KeySlice::from_slice(&key_bytes, ts);
+            let key_bytes = key_slice.to_key_vec().into_key_bytes();
+
+            _skiplist.insert(key_bytes, val);
         }
 
         Ok(Wal {
@@ -90,17 +98,18 @@ impl Wal {
         })
     }
 
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        if _key.len() > u16::MAX as usize || _value.len() > u16::MAX as usize {
+    pub fn put(&self, _key: KeySlice, _value: &[u8]) -> Result<()> {
+        if _key.key_len() > u16::MAX as usize || _value.len() > u16::MAX as usize {
             bail!("Key or value size exceeds u16::MAX");
         }
 
-        // Size: 2 (key_len) + key + 2 (val_len) + val + 4 (checksum)
-        let total_size = _key.len() + _value.len() + 8;
+        // Size: 2 (key_len) + key + 8 (ts) + 2 (val_len) + val + 4 (checksum)
+        let total_size = _key.raw_len() + _value.len() + 8;
         let mut buf = BytesMut::with_capacity(total_size);
 
-        buf.put_u16(_key.len() as u16);
-        buf.put_slice(_key);
+        buf.put_u16(_key.key_len() as u16);
+        buf.put_slice(_key.key_ref());
+        buf.put_u64(_key.ts());
         buf.put_u16(_value.len() as u16);
         buf.put_slice(_value);
 
