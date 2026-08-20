@@ -21,7 +21,7 @@ use farmhash;
 
 use super::{BlockMeta, SsTable};
 use crate::table::{Bloom, FileObject};
-use crate::{block::BlockBuilder, key::KeySlice, key::KeyVec, lsm_storage::BlockCache};
+use crate::{block::BlockBuilder, key::KeySlice, key::KeyVec, key::TS_DEFAULT, lsm_storage::BlockCache};
 use bytes::BufMut;
 
 /// Builds an SSTable from key-value pairs.
@@ -33,6 +33,7 @@ pub struct SsTableBuilder {
     key_hashes: Vec<u32>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
+    max_ts: u64,
 }
 
 impl SsTableBuilder {
@@ -46,6 +47,7 @@ impl SsTableBuilder {
             key_hashes: Vec::new(),
             meta: Vec::new(),
             block_size,
+            max_ts: TS_DEFAULT,
         }
     }
 
@@ -89,6 +91,10 @@ impl SsTableBuilder {
 
         // Hash ONLY the user key for the Bloom filter
         self.key_hashes.push(farmhash::fingerprint32(key.key_ref()));
+
+        if key.ts() > self.max_ts {
+            self.max_ts = key.ts();
+        }
     }
 
     /// Get the estimated size of the SSTable.
@@ -119,6 +125,8 @@ impl SsTableBuilder {
 
         data.put_u32(block_meta_offset as u32);
 
+        data.put_u64(self.max_ts);
+
         let bloom_filter_offset = data.len();
 
         let bloom = Bloom::build_from_key_hashes(&self.key_hashes, 10);
@@ -139,7 +147,7 @@ impl SsTableBuilder {
             first_key,
             last_key: self.last_key.clone().into_key_bytes(),
             bloom: Some(bloom),
-            max_ts: 0,
+            max_ts: self.max_ts,
         })
     }
 

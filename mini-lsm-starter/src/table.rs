@@ -26,7 +26,7 @@ use bytes::{Buf, BufMut};
 pub use iterator::SsTableIterator;
 
 use crate::block::Block;
-use crate::key::{KeyBytes, KeySlice};
+use crate::key::{KeyBytes, KeySlice, TS_DEFAULT};
 use crate::lsm_storage::BlockCache;
 
 use self::bloom::Bloom;
@@ -165,11 +165,14 @@ impl SsTable {
         let bloom_filter_bytes = file.read(bloom_filter_offset as u64, bloom_filter_len)?;
         let bloom = Bloom::decode(&bloom_filter_bytes)?;
 
-        let metadata_offset_bytes = file.read(bloom_filter_offset as u64 - 4, 4)?;
+        let metadata_offset_bytes = file.read(bloom_filter_offset as u64 - 12, 4)?;
         let block_meta_offset = metadata_offset_bytes.as_slice().get_u32() as usize;
 
         let metadata_size = (bloom_filter_offset - 4) as u64 - block_meta_offset as u64;
         let metadata_bytes = file.read(block_meta_offset as u64, metadata_size)?;
+
+        let max_ts_bytes = file.read((bloom_filter_offset - 8) as u64, 8)?;
+        let max_ts = max_ts_bytes.as_slice().get_u64();
 
         let block_meta = BlockMeta::decode_block_meta(metadata_bytes.as_slice());
 
@@ -192,7 +195,7 @@ impl SsTable {
             first_key,
             last_key,
             bloom: Some(bloom),
-            max_ts: 0,
+            max_ts,
         })
     }
 
