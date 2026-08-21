@@ -48,16 +48,13 @@ pub enum CompactionTask {
 }
 
 impl CompactionTask {
-    // TODO: fix this
-    // for now, we keep ALL versions of a key during the compaction.
     fn compact_to_bottom_level(&self) -> bool {
-        false
-        // match self {
-        // CompactionTask::ForceFullCompaction { .. } => true,
-        // CompactionTask::Leveled(task) => task.is_lower_level_bottom_level,
-        // CompactionTask::Simple(task) => task.is_lower_level_bottom_level,
-        // CompactionTask::Tiered(task) => task.bottom_tier_included,
-        // }
+        match self {
+            CompactionTask::ForceFullCompaction { .. } => true,
+            CompactionTask::Leveled(task) => task.is_lower_level_bottom_level,
+            CompactionTask::Simple(task) => task.is_lower_level_bottom_level,
+            CompactionTask::Tiered(task) => task.bottom_tier_included,
+        }
     }
 }
 
@@ -140,18 +137,35 @@ impl LsmStorageInner {
     {
         let mut compact_ssts = Vec::new();
         let mut sst_builder = SsTableBuilder::new(self.options.block_size);
-        let mut prev_user_key = Vec::new();
+        let mut current_user_key = Vec::new();
+        let mut has_version_below_watermark = false;
+        let watermark = self.mvcc().watermark();
 
         while iter.is_valid() {
-            if drop_tombstones && iter.value().is_empty() {
-                iter.next()?;
-                continue;
+            let is_same_user_key = iter.key().key_ref() == current_user_key.as_slice();
+
+            if !is_same_user_key {
+                // Track the current user key for the next iteration
+                current_user_key.clear();
+                current_user_key.extend_from_slice(iter.key().key_ref());
+                has_version_below_watermark = false;
+            }
+
+            // MVCC Garbage Collection
+            if iter.key().ts() <= watermark {
+                if has_version_below_watermark {
+                    iter.next()?;
+                    continue;
+                }
+                has_version_below_watermark = true;
+                if drop_tombstones && iter.value().is_empty() {
+                    iter.next()?;
+                    continue;
+                }
             }
 
             // Cut the SST ONLY when we cross to a NEW user key AND target size is reached
-            if sst_builder.estimated_size() >= self.options.target_sst_size
-                && iter.key().key_ref() != prev_user_key.as_slice()
-            {
+            if sst_builder.estimated_size() >= self.options.target_sst_size && !is_same_user_key {
                 let sst_id = self.next_sst_id();
                 let compact_sst = sst_builder.build(
                     sst_id,
@@ -165,15 +179,11 @@ impl LsmStorageInner {
             // Add key to current builder
             sst_builder.add(iter.key(), iter.value());
 
-            // Track the current user key for the next iteration
-            prev_user_key.clear();
-            prev_user_key.extend_from_slice(iter.key().key_ref());
-
             iter.next()?;
         }
 
         // Flush any remaining keys in the last builder
-        if !prev_user_key.is_empty() {
+        if !sst_builder.builder.is_empty() {
             let sst_id = self.next_sst_id();
             let compact_sst = sst_builder.build(
                 sst_id,
