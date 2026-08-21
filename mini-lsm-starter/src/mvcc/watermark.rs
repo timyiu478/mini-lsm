@@ -51,7 +51,7 @@ impl Watermark {
             }
         }
 
-        while let Some(&front_ts) = self.q.front() {
+        while let Some(&front_ts) = self.deque.front() {
             if self.readers.contains_key(&front_ts) {
                 break;
             }
