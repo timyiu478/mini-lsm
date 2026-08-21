@@ -10,3 +10,8 @@ Limitations:
 
 * It does not provide full serializability for scan-heavy workloads.
 * Assume the metadata for every SST fits in memory.
+
+Bonus Tasks that I Implemented:
+
+* Early Stop for Memtable Gets
+* An amortized O(1) watermark structure using cyclic queue
