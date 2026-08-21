@@ -71,14 +71,15 @@ impl Transaction {
         let lower_bytes = map_bound(lower);
         let upper_bytes = map_bound(upper);
 
-        // TODO: fix this
-        let local_iter = TxnLocalIteratorBuilder {
+        let mut local_iter = TxnLocalIteratorBuilder {
             map: self.local_storage.clone(),
             iter_builder: |map| map.range((lower_bytes, upper_bytes)),
             item: (Bytes::new(), Bytes::new()),
             valid: false,
         }
         .build();
+
+        local_iter.next()?;
 
         let fused_iter = self.inner.scan_with_ts(lower, upper, self.read_ts)?;
 
@@ -88,11 +89,34 @@ impl Transaction {
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) {
-        unimplemented!()
+        if self.committed.load(Ordering::SeqCst) {
+            panic!("Cannot operate on committed txn");
+        }
+        if let Some(guard) = &self.key_hashes {
+            let mut guard = guard.lock();
+            let (write_set, _) = &mut *guard;
+            write_set.insert(farmhash::hash32(key));
+        }
+
+        let key_bytes = Bytes::copy_from_slice(key);
+        let val_bytes = Bytes::copy_from_slice(value);
+
+        self.local_storage.insert(key_bytes, val_bytes);
     }
 
     pub fn delete(&self, key: &[u8]) {
-        unimplemented!()
+        if self.committed.load(Ordering::SeqCst) {
+            panic!("Cannot operate on committed txn");
+        }
+        if let Some(guard) = &self.key_hashes {
+            let mut guard = guard.lock();
+            let (write_set, _) = &mut *guard;
+            write_set.insert(farmhash::hash32(key));
+        }
+
+        let key_bytes = Bytes::copy_from_slice(key);
+
+        self.local_storage.insert(key_bytes, Bytes::new());
     }
 
     pub fn commit(&self) -> Result<()> {
@@ -165,7 +189,16 @@ impl TxnIterator {
         txn: Arc<Transaction>,
         iter: TwoMergeIterator<TxnLocalIterator, FusedIterator<LsmIterator>>,
     ) -> Result<Self> {
-        Ok(TxnIterator { _txn: txn, iter })
+        let mut txn_iter = TxnIterator { _txn: txn, iter };
+        txn_iter.skip_deletes()?;
+        Ok(txn_iter)
+    }
+
+    fn skip_deletes(&mut self) -> Result<()> {
+        while self.iter.is_valid() && self.iter.value().is_empty() {
+            self.iter.next()?;
+        }
+        Ok(())
     }
 }
 
@@ -189,6 +222,7 @@ impl StorageIterator for TxnIterator {
 
     fn next(&mut self) -> Result<()> {
         self.iter.next()?;
+        self.skip_deletes()?;
         Ok(())
     }
 
