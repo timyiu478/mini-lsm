@@ -183,7 +183,7 @@ impl LsmStorageInner {
         }
 
         // Flush any remaining keys in the last builder
-        if !current_user_key.is_empty() {
+        if !sst_builder.builder.is_empty() {
             let sst_id = self.next_sst_id();
             let compact_sst = sst_builder.build(
                 sst_id,

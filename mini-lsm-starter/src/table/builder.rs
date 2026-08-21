@@ -28,7 +28,7 @@ use bytes::BufMut;
 
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
-    builder: BlockBuilder,
+    pub(crate) builder: BlockBuilder,
     first_key: KeyVec,
     last_key: KeyVec,
     data: Vec<u8>,
