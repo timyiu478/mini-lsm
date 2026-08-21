@@ -30,7 +30,7 @@ use parking_lot::Mutex;
 use crate::{
     iterators::{StorageIterator, two_merge_iterator::TwoMergeIterator},
     lsm_iterator::{FusedIterator, LsmIterator},
-    lsm_storage::LsmStorageInner,
+    lsm_storage::{LsmStorageInner, WriteBatchRecord},
     mem_table::map_bound,
 };
 
@@ -120,7 +120,30 @@ impl Transaction {
     }
 
     pub fn commit(&self) -> Result<()> {
-        unimplemented!()
+        if self.committed.load(Ordering::SeqCst) {
+            panic!("Cannot operate on committed txn");
+        }
+
+        let mut batch = Vec::new();
+        let mut local_entries = Vec::new();
+
+        for entry in self.local_storage.iter() {
+            local_entries.push((entry.key().clone(), entry.value().clone()));
+        }
+
+        for (k, v) in &local_entries {
+            if v.is_empty() {
+                batch.push(WriteBatchRecord::Del(k.as_ref()));
+            } else {
+                batch.push(WriteBatchRecord::Put(k.as_ref(), v.as_ref()));
+            }
+        }
+
+        self.inner.write_batch(&batch)?;
+
+        self.committed.swap(true, Ordering::SeqCst);
+
+        Ok(())
     }
 }
 
