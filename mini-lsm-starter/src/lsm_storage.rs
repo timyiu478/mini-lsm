@@ -559,36 +559,38 @@ impl LsmStorageInner {
         // Allocate timestamp
         let commit_ts = self.mvcc().latest_commit_ts() + 1;
 
+        let mut pairs = Vec::with_capacity(_batch.len());
         for record in _batch {
-            let state = self.state.read();
-
             match record {
                 WriteBatchRecord::Del(k) => {
-                    let key = KeySlice::from_slice(k.as_ref(), commit_ts);
-                    state.memtable.put(key, b"")?;
+                    pairs.push((KeySlice::from_slice(k.as_ref(), commit_ts), &[][..]));
                 }
                 WriteBatchRecord::Put(k, v) => {
-                    let key = KeySlice::from_slice(k.as_ref(), commit_ts);
-                    state.memtable.put(key, v.as_ref())?;
-                }
-            }
-
-            if state.memtable.approximate_size() >= self.options.target_sst_size {
-                // Drop read lock before calling force_freeze_memtable
-                // because freeze needs a WRITE lock on self.state
-                drop(state);
-                let state_lock = self.state_lock.lock();
-                let state = self.state.read();
-
-                if state.memtable.approximate_size() >= self.options.target_sst_size {
-                    drop(state);
-                    let _ = self.force_freeze_memtable(&state_lock);
+                    pairs.push((KeySlice::from_slice(k.as_ref(), commit_ts), v.as_ref()));
                 }
             }
         }
 
+        // Submit entire batch to memtable and single WAL frame atomically
+        let state = self.state.read();
+        state.memtable.put_batch(&pairs)?;
+
         // Publication
         self.mvcc().update_commit_ts(commit_ts);
+
+        // Fallible freeze check AFTER publication
+        if state.memtable.approximate_size() >= self.options.target_sst_size {
+            // Drop read lock before calling force_freeze_memtable
+            // because freeze needs a WRITE lock on self.state
+            drop(state);
+            let state_lock = self.state_lock.lock();
+            let state = self.state.read();
+
+            if state.memtable.approximate_size() >= self.options.target_sst_size {
+                drop(state);
+                let _ = self.force_freeze_memtable(&state_lock);
+            }
+        }
 
         Ok(())
     }

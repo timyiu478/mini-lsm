@@ -164,25 +164,27 @@ impl MemTable {
     /// In week 2, day 6, also flush the data to WAL.
     /// In week 3, day 5, route this through the batch WAL implementation.
     pub fn put(&self, _key: KeySlice, _value: &[u8]) -> Result<()> {
-        let key_bytes = _key.to_key_vec().into_key_bytes();
-        let val_bytes = Bytes::copy_from_slice(_value);
-
-        if let Some(wal) = &self.wal {
-            wal.put(_key, &val_bytes)?;
-        }
-
-        let added_size = _key.key_len() + _value.len();
-        self.approximate_size
-            .fetch_add(added_size, Ordering::Relaxed);
-
-        self.map.insert(key_bytes, val_bytes);
-
-        Ok(())
+        self.put_batch(&[(_key, _value)])
     }
 
     /// Implement this in week 3, day 5.
     pub fn put_batch(&self, _data: &[(KeySlice, &[u8])]) -> Result<()> {
-        unimplemented!()
+        if let Some(wal) = &self.wal {
+            wal.put_batch(_data)?;
+        }
+
+        for &(key, value) in _data {
+            let key_bytes = key.to_key_vec().into_key_bytes();
+            let val_bytes = Bytes::copy_from_slice(value);
+
+            let added_size = key.key_len() + value.len();
+            self.approximate_size
+                .fetch_add(added_size, Ordering::Relaxed);
+
+            self.map.insert(key_bytes, val_bytes);
+        }
+
+        Ok(())
     }
 
     pub fn sync_wal(&self) -> Result<()> {

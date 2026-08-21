@@ -43,54 +43,74 @@ impl Wal {
         file.read_to_end(&mut buf)?;
 
         let mut ptr = buf.as_slice();
+        let mut valid_offset = 0;
 
         while !ptr.is_empty() {
-            // Keep a reference to the beginning of the current record
-            let record_start = ptr;
-
-            if ptr.len() < 2 {
-                break; // Incomplete key length header
-            }
-            let key_len = ptr.get_u16() as usize;
-            if ptr.len() < key_len {
-                break; // Incomplete key payload
-            }
-            let key_bytes = Bytes::copy_from_slice(&ptr[..key_len]);
-            ptr.advance(key_len);
-
-            if ptr.len() < 8 {
-                break; // Incomplete timestamp header
-            }
-            let ts = ptr.get_u64();
-
-            if ptr.len() < 2 {
-                break; // Incomplete value length header
-            }
-            let val_len = ptr.get_u16() as usize;
-            if ptr.len() < val_len {
-                break; // Incomplete value payload
-            }
-            let val = Bytes::copy_from_slice(&ptr[..val_len]);
-            ptr.advance(val_len);
-
-            // Check for checksum
+            // Header is a u32 (4 bytes)
             if ptr.len() < 4 {
-                break; // Incomplete checksum payload
+                // FAIL FAST instead of breaking/truncating
+                bail!("WAL corruption: Incomplete WAL frame header");
             }
-            let expected_checksum = ptr.get_u32();
+            let mut p = ptr;
+            let batch_size = p.get_u32() as usize;
 
-            // Calculate the actual length of the record (excluding the 4 checksum bytes)
-            let record_len = 2 + key_len + 8 + 2 + val_len;
-            let actual_checksum = crc32fast::hash(&record_start[..record_len]);
+            // Frame must contain the batch_size (body) + 4 bytes for the checksum footer
+            if p.len() < batch_size + 4 {
+                // FAIL FAST instead of breaking/truncating
+                bail!("WAL corruption: Incomplete WAL frame body or checksum");
+            }
+
+            // Extract body and advance pointer
+            let body_slice = &p[..batch_size];
+            p.advance(batch_size);
+
+            // Extract expected checksum and calculate actual checksum
+            let expected_checksum = p.get_u32();
+            let actual_checksum = crc32fast::hash(body_slice);
 
             if actual_checksum != expected_checksum {
-                break; // File is corrupted from this point onward due to a crash
+                bail!("WAL corruption: Checksum mismatch");
             }
 
-            let key_slice = KeySlice::from_slice(&key_bytes, ts);
-            let key_bytes = key_slice.to_key_vec().into_key_bytes();
+            // Parse body internally
+            let mut body_ptr = body_slice;
+            let mut batch_kvs = Vec::new();
 
-            _skiplist.insert(key_bytes, val);
+            while !body_ptr.is_empty() {
+                if body_ptr.len() < 2 { bail!("WAL corruption: Invalid nested key length"); }
+                let key_len = body_ptr.get_u16() as usize;
+
+                if body_ptr.len() < key_len { bail!("WAL corruption: Key bounds exceed body slice"); }
+                let key_bytes = Bytes::copy_from_slice(&body_ptr[..key_len]);
+                body_ptr.advance(key_len);
+
+                if body_ptr.len() < 8 { bail!("WAL corruption: Missing timestamp"); }
+                let ts = body_ptr.get_u64();
+
+                if body_ptr.len() < 2 { bail!("WAL corruption: Invalid nested value length"); }
+                let val_len = body_ptr.get_u16() as usize;
+
+                if body_ptr.len() < val_len { bail!("WAL corruption: Value bounds exceed body slice"); }
+                let val = Bytes::copy_from_slice(&body_ptr[..val_len]);
+                body_ptr.advance(val_len);
+
+                let key_slice = KeySlice::from_slice(&key_bytes, ts);
+                batch_kvs.push((key_slice.to_key_vec().into_key_bytes(), val));
+            }
+
+            // Frame is perfectly valid. Commit to Skiplist.
+            for (k, v) in batch_kvs {
+                _skiplist.insert(k, v);
+            }
+
+            // Advance the main pointer to the next frame and track valid offset
+            ptr = p;
+            valid_offset += 4 + batch_size + 4;
+        }
+
+        // If the loop finished cleanly but the file has dangling incomplete bytes, truncate them
+        if valid_offset < buf.len() {
+            file.set_len(valid_offset as u64)?;
         }
 
         Ok(Wal {
@@ -99,43 +119,55 @@ impl Wal {
     }
 
     pub fn put(&self, _key: KeySlice, _value: &[u8]) -> Result<()> {
-        if _key.key_len() > u16::MAX as usize || _value.len() > u16::MAX as usize {
-            bail!("Key or value size exceeds u16::MAX");
+        self.put_batch(&[(_key, _value)])
+    }
+
+    pub fn put_batch(&self, _data: &[(KeySlice, &[u8])]) -> Result<()> {
+        let mut body_size = 0_usize;
+
+        // Verify bounds & calculate the required body size
+        for (key, val) in _data {
+            if key.key_len() > u16::MAX as usize || val.len() > u16::MAX as usize {
+                bail!("Key or value size exceeds u16::MAX bounds");
+            }
+            body_size += 2 + key.key_len() + 8 + 2 + val.len();
         }
 
-        // Size: 2 (key_len) + key + 8 (ts) + 2 (val_len) + val + 4 (checksum)
-        let total_size = _key.raw_len() + _value.len() + 8;
-        let mut buf = BytesMut::with_capacity(total_size);
+        if body_size > u32::MAX as usize {
+            bail!("Total batch size exceeds u32::MAX");
+        }
 
-        buf.put_u16(_key.key_len() as u16);
-        buf.put_slice(_key.key_ref());
-        buf.put_u64(_key.ts());
-        buf.put_u16(_value.len() as u16);
-        buf.put_slice(_value);
+        // Capacity: 4 (batch_size header) + body_size + 4 (checksum footer)
+        let mut buf = BytesMut::with_capacity(4 + body_size + 4);
 
-        // Compute checksum over the payload and append it
-        let checksum = crc32fast::hash(&buf);
+        // 1. Write Header
+        buf.put_u32(body_size as u32);
+
+        // 2. Write Body
+        for (key, val) in _data {
+            buf.put_u16(key.key_len() as u16);
+            buf.put_slice(key.key_ref());
+            buf.put_u64(key.ts());
+            buf.put_u16(val.len() as u16);
+            buf.put_slice(val);
+        }
+
+        // 3. Calculate and append checksum over the exact body boundary
+        let body_slice = &buf[4..4 + body_size];
+        let checksum = crc32fast::hash(body_slice);
         buf.put_u32(checksum);
 
+        // 4. Lock file writer and commit memory flush
         let mut writer = self.file.lock();
-
         writer.write_all(&buf.freeze())?;
 
         Ok(())
     }
 
-    /// Implement this in week 3, day 5.
-    pub fn put_batch(&self, _data: &[(KeySlice, &[u8])]) -> Result<()> {
-        unimplemented!()
-    }
-
     pub fn sync(&self) -> Result<()> {
         let mut writer = self.file.lock();
-
         writer.flush()?;
-
         writer.get_mut().sync_all()?;
-
         Ok(())
     }
 }
