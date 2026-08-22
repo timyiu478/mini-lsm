@@ -7,4 +7,4 @@ OCC in MVCC:
         * T2: read x and y
         * T1: write x
         * T2: write y
-    * CANNOT prevent write skew case: range scan
+    * CANNOT prevent phantom read
