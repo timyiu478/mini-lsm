@@ -27,11 +27,14 @@ use crossbeam_skiplist::SkipMap;
 use ouroboros::self_referencing;
 use parking_lot::Mutex;
 
+use std::ops::Bound::Excluded;
+
 use crate::{
     iterators::{StorageIterator, two_merge_iterator::TwoMergeIterator},
     lsm_iterator::{FusedIterator, LsmIterator},
     lsm_storage::{LsmStorageInner, WriteBatchRecord},
     mem_table::map_bound,
+    mvcc::CommittedTxnData,
 };
 
 pub struct Transaction {
@@ -124,13 +127,18 @@ impl Transaction {
             panic!("Cannot operate on committed txn");
         }
 
+        // 1. Read-Only Fast Path
+        if self.local_storage.is_empty() {
+            self.committed.swap(true, Ordering::SeqCst);
+            return Ok(());
+        }
+
+        // 2. Prepare the batch
         let mut batch = Vec::new();
         let mut local_entries = Vec::new();
-
         for entry in self.local_storage.iter() {
             local_entries.push((entry.key().clone(), entry.value().clone()));
         }
-
         for (k, v) in &local_entries {
             if v.is_empty() {
                 batch.push(WriteBatchRecord::Del(k.as_ref()));
@@ -139,7 +147,43 @@ impl Transaction {
             }
         }
 
-        self.inner.write_batch(&batch)?;
+        // 3. Acquire commit_lock for the ENTIRE remainder of the function
+        // This lock now spans validation, writing, and registering the transaction.
+        let _commit_guard = self.inner.mvcc().commit_lock.lock();
+
+        // 4. Transaction Validation
+        if let Some(guard) = &self.key_hashes {
+            let (_, read_set) = &*guard.lock();
+            if !read_set.is_empty() {
+                let expected_commit_ts = self.inner.mvcc().latest_commit_ts() + 1;
+                let committed_txns = self.inner.mvcc().committed_txns.lock();
+
+                // Check if our read_set conflicts with any write_set committed after read_ts
+                for (_, txn_data) in committed_txns.range((Bound::Excluded(&self.read_ts), Bound::Excluded(&expected_commit_ts))) {
+                    if !read_set.is_disjoint(&txn_data.key_hashes) {
+                        anyhow::bail!("Serializable validation failed: conflict detected");
+                    }
+                }
+            }
+        }
+
+        // 5. Submit write batch (allocates commit timestamp inside)
+        let commit_ts = self.inner.write_batch_inner(&batch)?;
+
+        // 6. Register committed data
+        if let Some(guard) = &self.key_hashes {
+            let (write_set, _) = &*guard.lock();
+
+            if !write_set.is_empty() {
+                let mut committed_txns = self.inner.mvcc().committed_txns.lock();
+                let committed_data = CommittedTxnData {
+                    key_hashes: write_set.clone(),
+                    read_ts: self.read_ts,
+                    commit_ts,
+                };
+                committed_txns.insert(commit_ts, committed_data);
+            }
+        }
 
         self.committed.swap(true, Ordering::SeqCst);
 
@@ -219,6 +263,12 @@ impl TxnIterator {
 
     fn skip_deletes(&mut self) -> Result<()> {
         while self.iter.is_valid() && self.iter.value().is_empty() {
+            if let Some(guard) = &self._txn.key_hashes {
+                let mut guard = guard.lock();
+                let (_, read_set) = &mut *guard;
+                let key = self.iter.key();
+                read_set.insert(farmhash::hash32(key));
+            }
             self.iter.next()?;
         }
 

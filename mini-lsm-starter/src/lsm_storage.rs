@@ -552,7 +552,29 @@ impl LsmStorageInner {
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
-    pub fn write_batch<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<()> {
+    pub fn write_batch<T: AsRef<[u8]>>(
+        self: &Arc<Self>,
+        batch: &[WriteBatchRecord<T>],
+    ) -> Result<()> {
+        if !self.options.serializable {
+            self.write_batch_inner(batch)?;
+        } else {
+            let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+            for record in batch {
+                match record {
+                    WriteBatchRecord::Del(key) => {
+                        txn.delete(key.as_ref());
+                    }
+                    WriteBatchRecord::Put(key, value) => {
+                        txn.put(key.as_ref(), value.as_ref());
+                    }
+                }
+            }
+            txn.commit()?;
+        }
+        Ok(())
+    }
+    pub fn write_batch_inner<T: AsRef<[u8]>>(&self, _batch: &[WriteBatchRecord<T>]) -> Result<u64> {
         // Acquire MVCC write lock to make write_batch atomic
         let _lock = self.mvcc().write_lock.lock();
 
@@ -592,21 +614,31 @@ impl LsmStorageInner {
             }
         }
 
-        Ok(())
+        Ok(commit_ts)
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        let batch = vec![WriteBatchRecord::Put(_key, _value)];
-
-        self.write_batch(&batch)
+    pub fn put(self: &Arc<Self>, _key: &[u8], _value: &[u8]) -> Result<()> {
+        if !self.options.serializable {
+            self.write_batch_inner(&[WriteBatchRecord::Put(_key, _value)])?;
+        } else {
+            let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+            txn.put(_key, _value);
+            txn.commit()?;
+        }
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
-    pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        let batch = vec![WriteBatchRecord::Del(_key)];
-
-        self.write_batch(&batch)
+    pub fn delete(self: &Arc<Self>, _key: &[u8]) -> Result<()> {
+        if !self.options.serializable {
+            self.write_batch_inner(&[WriteBatchRecord::Del(_key)])?;
+        } else {
+            let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+            txn.delete(_key);
+            txn.commit()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn path_of_manifest_static(path: impl AsRef<Path>) -> PathBuf {
