@@ -159,7 +159,10 @@ impl Transaction {
                 let committed_txns = self.inner.mvcc().committed_txns.lock();
 
                 // Check if our read_set conflicts with any write_set committed after read_ts
-                for (_, txn_data) in committed_txns.range((Bound::Excluded(&self.read_ts), Bound::Excluded(&expected_commit_ts))) {
+                for (_, txn_data) in committed_txns.range((
+                    Bound::Excluded(&self.read_ts),
+                    Bound::Excluded(&expected_commit_ts),
+                )) {
                     if !read_set.is_disjoint(&txn_data.key_hashes) {
                         anyhow::bail!("Serializable validation failed: conflict detected");
                     }
