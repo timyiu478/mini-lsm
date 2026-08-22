@@ -221,6 +221,16 @@ impl TxnIterator {
         while self.iter.is_valid() && self.iter.value().is_empty() {
             self.iter.next()?;
         }
+
+        if self.iter.is_valid() {
+            if let Some(guard) = &self._txn.key_hashes {
+                let mut guard = guard.lock();
+                let (_, read_set) = &mut *guard;
+                let key = self.iter.key();
+                read_set.insert(farmhash::hash32(key));
+            }
+        }
+
         Ok(())
     }
 }
