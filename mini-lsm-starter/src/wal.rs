@@ -77,20 +77,30 @@ impl Wal {
             let mut batch_kvs = Vec::new();
 
             while !body_ptr.is_empty() {
-                if body_ptr.len() < 2 { bail!("WAL corruption: Invalid nested key length"); }
+                if body_ptr.len() < 2 {
+                    bail!("WAL corruption: Invalid nested key length");
+                }
                 let key_len = body_ptr.get_u16() as usize;
 
-                if body_ptr.len() < key_len { bail!("WAL corruption: Key bounds exceed body slice"); }
+                if body_ptr.len() < key_len {
+                    bail!("WAL corruption: Key bounds exceed body slice");
+                }
                 let key_bytes = Bytes::copy_from_slice(&body_ptr[..key_len]);
                 body_ptr.advance(key_len);
 
-                if body_ptr.len() < 8 { bail!("WAL corruption: Missing timestamp"); }
+                if body_ptr.len() < 8 {
+                    bail!("WAL corruption: Missing timestamp");
+                }
                 let ts = body_ptr.get_u64();
 
-                if body_ptr.len() < 2 { bail!("WAL corruption: Invalid nested value length"); }
+                if body_ptr.len() < 2 {
+                    bail!("WAL corruption: Invalid nested value length");
+                }
                 let val_len = body_ptr.get_u16() as usize;
 
-                if body_ptr.len() < val_len { bail!("WAL corruption: Value bounds exceed body slice"); }
+                if body_ptr.len() < val_len {
+                    bail!("WAL corruption: Value bounds exceed body slice");
+                }
                 let val = Bytes::copy_from_slice(&body_ptr[..val_len]);
                 body_ptr.advance(val_len);
 
