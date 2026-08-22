@@ -170,12 +170,13 @@ impl Transaction {
         // 5. Submit write batch (allocates commit timestamp inside)
         let commit_ts = self.inner.write_batch_inner(&batch)?;
 
-        // 6. Register committed data
+        // 6. Register committed data &
+        // 7. Garbage Collection
         if let Some(guard) = &self.key_hashes {
             let (write_set, _) = &*guard.lock();
+            let mut committed_txns = self.inner.mvcc().committed_txns.lock();
 
             if !write_set.is_empty() {
-                let mut committed_txns = self.inner.mvcc().committed_txns.lock();
                 let committed_data = CommittedTxnData {
                     key_hashes: write_set.clone(),
                     read_ts: self.read_ts,
@@ -183,6 +184,10 @@ impl Transaction {
                 };
                 committed_txns.insert(commit_ts, committed_data);
             }
+
+            // Garbage collect: prune transactions below the active watermark
+            let watermark = self.inner.mvcc().watermark();
+            committed_txns.retain(|&ts, _| ts >= watermark);
         }
 
         self.committed.swap(true, Ordering::SeqCst);
